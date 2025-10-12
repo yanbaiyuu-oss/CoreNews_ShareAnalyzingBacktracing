@@ -378,7 +378,7 @@ class DataFetcher:
             print("  - 所有板块成分股数据均获取失败。")
             return pd.DataFrame()
 
-    # FIX 3: 兼容 'date' 列名检查
+    # FIX 3: 兼容 'date'/'amount' 等列名检查，并全面标准化缓存数据
     def fetch_hist_data_parallel(self, codes: list, days: int) -> pd.DataFrame:
         """并行获取指定股票代码的历史数据，并缓存到本地文件。"""
         print(f"\n正在为 {len(codes)} 只股票下载 {days} 天的历史数据，使用10个线程并行处理。")
@@ -391,20 +391,37 @@ class DataFetcher:
         if os.path.exists(self.macd_cache_file):
             cached_df = self.load_data_from_txt(self.macd_cache_file)
             if not cached_df.empty:
+                
+                # --- 修复区域：全面兼容缓存文件中的英文列名并标准化 ---
+                # 定义缓存文件中的列名到 Akshare 标准列名的映射
+                # 假设 'amount' 在此上下文中代表 '成交量' (volume)，以满足技术分析要求
+                cache_col_map = {
+                    'date': '日期',
+                    'open': '开盘',
+                    'close': '收盘',
+                    'high': '最高',
+                    'low': '最低',
+                    'amount': '成交量', # 关键修复：将用户的 'amount' 映射为 '成交量'
+                }
+                
+                # 检查并重命名缓存中的非标准列
+                rename_dict = {}
+                for old_name, new_name in cache_col_map.items():
+                    if old_name in cached_df.columns:
+                        rename_dict[old_name] = new_name
 
-                # --- 修复区域：新增 '日期' 列存在性检查，兼容 'date' 列名 ---
-                date_col_name = None
-                if '日期' in cached_df.columns:
-                    date_col_name = '日期'
-                elif 'date' in cached_df.columns:
-                    # 发现用户的 'date' 列名，将其重命名为 '日期'，以兼容后续逻辑
-                    cached_df.rename(columns={'date': '日期'}, inplace=True)
-                    date_col_name = '日期'
+                if rename_dict:
+                    cached_df.rename(columns=rename_dict, inplace=True)
+                    print("[INFO] 已将缓存文件中的非标准列名(如 date, amount)重命名为 Akshare 标准格式。")
 
-                if date_col_name is None:
-                    # '日期' 和 'date' 都不存在，则报错并重新下载
+
+                # 确保所有核心列都存在，否则缓存无效
+                required_cols = ['日期', '收盘', '成交量']
+                missing_cols = [col for col in required_cols if col not in cached_df.columns]
+                
+                if missing_cols:
                     print(
-                        f"[WARN] 缓存文件 {os.path.basename(self.macd_cache_file)} 缺少 '日期' 列，缓存数据无效，将重新下载。")
+                        f"[WARN] 缓存文件 {os.path.basename(self.macd_cache_file)} 缺少核心列: {', '.join(missing_cols)}，缓存数据无效，将重新下载。")
                     # 流程将继续进行重新下载
                 else:
                     # 简单检查数据日期，如果满足要求则直接返回
@@ -414,6 +431,7 @@ class DataFetcher:
                     else:
                         print(f"缓存数据日期不新鲜，将重新下载。")
                 # --- 修复区域结束 ---
+
 
         all_data = []
         with ThreadPoolExecutor(max_workers=10) as executor:
@@ -717,7 +735,7 @@ class DataProcessor:
 
                 # ================= 修复区域开始 (解决 KeyError: 'volume') =================
                 required_cols = ['close', 'high', 'low', 'volume']
-
+                
                 # 1. 检查核心列是否存在
                 missing_cols = [col for col in required_cols if col not in group_df.columns]
                 if missing_cols:
@@ -1066,8 +1084,7 @@ class BacktestReporter:
                                                                                                            '_').replace(
                         '[', '_').replace(']', '_').replace(':', '_')
 
-                    worksheet = workbook.add_sheet(
-                        sheet_name)  # FIX: Use workbook.add_sheet for newer xlsxwriter versions
+                    worksheet = workbook.add_sheet(sheet_name) # FIX: Use workbook.add_sheet for newer xlsxwriter versions
                     df.to_excel(writer, sheet_name=sheet_name, index=False, startrow=1, header=False)
 
                     # 3. 写入表头和设置列宽
