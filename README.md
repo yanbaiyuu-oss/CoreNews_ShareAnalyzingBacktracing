@@ -35,5 +35,3 @@ CCI超卖: cci_df
 RSI金叉: rsi_df
 
 指标汇总: recommended_stocks
-
-**2 基础回测功能代码实现（后续逐渐调校）**
