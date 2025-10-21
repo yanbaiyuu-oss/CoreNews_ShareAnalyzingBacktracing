@@ -1,0 +1,136 @@
+
+Excel 自动化项目：动态行业趋势标记工具
+项目概述
+本项目旨在通过一个 VBA 宏脚本，实现对两个 Excel 工作表之间数据的动态关联标记和高亮，以辅助分析特定日期下的行业表现趋势。该工具能够高效地将**“输入”工作表中的日期信息，映射到“趋势”**工作表上对应的行业单元格，并进行视觉高亮提示。
+
+关键功能和工作流程
+该自动化脚本主要在 Excel 环境下运行，并严格按照以下逻辑执行：
+
+数据源读取：宏从 “输入” 工作表中，逐行读取日期（A 列）和行业名称（B 列）的数据对。
+
+目标定位：在 “趋势” 工作表中，脚本以上述读取到的行业名称作为关键索引，在 A 列中查找匹配的行。
+
+B 列标题动态更新：
+
+脚本将当前读取到的日期值，写入到 “趋势”工作表 B 列的第 1 行（作为该列的标题）。
+
+注意： 如果“输入”表有多条记录，后续的日期会覆盖 B 列标题。
+
+精准高亮标记：
+
+找到目标行业后，脚本仅对 “趋势”工作表 B 列中与该行业交叉的单元格进行操作。
+
+对该单元格应用红色背景高亮，以示标记。
+
+内容清空：为确保单元格内无文字残留（仅保留高亮效果），脚本会清除该单元格的内容。
+
+项目价值
+此宏脚本极大地提升了数据分析的效率：
+
+自动化对齐：无需手动查找和复制粘贴日期，将数百行数据的比对工作瞬间完成。
+
+视觉反馈：通过统一在 B 列进行高亮，分析师可以快速定位和查看特定日期下各个行业（在 A 列中列出）的对应标记状态。
+
+易用性：一旦设置完成，用户只需运行一次宏，即可完成复杂的格式化和数据映射任务。
+
+VB代码：
+
+Sub HighlightIndustryOnlyInColumnB()
+
+    ' 定义工作表变量
+    Dim wsInput As Worksheet
+    Dim wsTrend As Worksheet
+    
+    ' 定义循环变量
+    Dim lastRowInput As Long
+    Dim inputRow As Long
+    
+    ' 定义数据变量
+    Dim inputDate As String
+    Dim industryName As String
+    
+    ' 定义“趋势”工作表的行变量
+    Dim trendRow As Long
+    Dim foundCell As Range
+    
+    ' 定义目标列（B列）
+    Const TARGET_COL_LETTER As String = "B"
+    Dim TARGET_COL_NUM As Long
+    
+    ' --- 1. 设置工作表 ---
+    On Error GoTo ErrorHandler ' 启用错误处理
+    Set wsInput = ThisWorkbook.Sheets("输入")
+    Set wsTrend = ThisWorkbook.Sheets("趋势")
+    
+    ' 获取目标列的数字编号 (B=2)
+    TARGET_COL_NUM = wsTrend.Columns(TARGET_COL_LETTER).Column
+    
+    ' --- 2. 确定“输入”表的最后一行 ---
+    ' 假设日期在A列，行业在B列
+    lastRowInput = wsInput.Cells(Rows.Count, "A").End(xlUp).Row
+    
+    If lastRowInput < 2 Then
+        MsgBox "“输入”工作表数据不足，请检查 A 列和 B 列是否有数据。", vbExclamation
+        Exit Sub
+    End If
+    
+    ' --- 3. 循环遍历“输入”表 ---
+    ' 从第2行开始循环 (假设第1行是标题)
+    For inputRow = 2 To lastRowInput
+        
+        ' 获取日期 (A列)
+        If IsDate(wsInput.Cells(inputRow, "A").Value) Then
+            ' 格式化日期作为列标题 (写入B列的第1行)
+            inputDate = Format(wsInput.Cells(inputRow, "A").Value, "yyyy/m/d")
+        Else
+            MsgBox "“输入”工作表第 " & inputRow & " 行的日期格式不正确，已跳过此行。", vbExclamation
+            GoTo NextIteration
+        End If
+        
+        ' 获取行业名称 (B列)
+        industryName = Trim(wsInput.Cells(inputRow, "B").Value)
+        
+        If industryName = "" Then GoTo NextIteration ' 行业名称为空，跳过
+        
+        ' --- 4. 在“趋势”表中查找行业名称 (在A列) ---
+        Set foundCell = wsTrend.Columns("A").Find( _
+            What:=industryName, _
+            LookIn:=xlValues, _
+            LookAt:=xlWhole, _
+            SearchOrder:=xlByRows)
+            
+        ' --- 5. 如果找到行业，则更新标题并高亮 B 列对应单元格 ---
+        If Not foundCell Is Nothing Then
+            
+            trendRow = foundCell.Row
+            
+            ' **更新 B 列的列标题 (在趋势表的第1行)**
+            ' 注意：如果多次运行宏，B列标题会被覆盖
+            wsTrend.Cells(1, TARGET_COL_NUM).Value = inputDate
+            
+            ' **高亮显示对应单元格 (在 B 列中，与行业所在行交叉的单元格)**
+            With wsTrend.Cells(trendRow, TARGET_COL_NUM).Interior
+                .Pattern = xlSolid
+                .Color = vbRed ' 设置背景色为红色
+            End With
+            
+            ' **关键：清除单元格内容，只保留高亮**
+            wsTrend.Cells(trendRow, TARGET_COL_NUM).ClearContents
+            
+        Else
+            ' 如果在“趋势”表中未找到该行业
+            ' MsgBox "在“趋势”表的A列中未找到行业: " & industryName, vbInformation
+        End If
+        
+NextIteration:
+    Next inputRow
+    
+    MsgBox "宏执行完毕！“趋势”工作表 B 列的标题已更新，对应行业单元格已高亮且内容已清空。", vbInformation
+    Exit Sub
+
+' --- 错误处理 ---
+ErrorHandler:
+    MsgBox "执行宏时发生错误：" & Err.Description & vbCrLf & _
+           "错误代码: " & Err.Number, vbCritical
+End Sub
+
