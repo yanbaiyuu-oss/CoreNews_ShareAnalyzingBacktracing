@@ -34,103 +34,135 @@ B 列标题动态更新：
 易用性：一旦设置完成，用户只需运行一次宏，即可完成复杂的格式化和数据映射任务。
 
 VB代码：
-
-Sub HighlightIndustryOnlyInColumnB()
-
+Sub AggregateAndHighlightByUniqueDate()
+    
     ' 定义工作表变量
     Dim wsInput As Worksheet
     Dim wsTrend As Worksheet
     
-    ' 定义循环变量
+    ' 定义循环和数据变量
     Dim lastRowInput As Long
     Dim inputRow As Long
-    
-    ' 定义数据变量
-    Dim inputDate As String
+    Dim inputDate As Date
     Dim industryName As String
     
-    ' 定义“趋势”工作表的行变量
+    ' 定义字典对象，用于存储：唯一的日期键 -> 对应的列号
+    ' (注意: 使用 CreateObject 确保在大多数系统上都能运行，不需要额外引用)
+    Dim dateColumnMap As Object 
+    
+    Dim currentTrendCol As Long ' 用于追踪下一列的新增位置
     Dim trendRow As Long
+    Dim dateKey As String ' 用于字典的唯一日期键
     Dim foundCell As Range
     
-    ' 定义目标列（B列）
-    Const TARGET_COL_LETTER As String = "B"
-    Dim TARGET_COL_NUM As Long
+    On Error GoTo ErrorHandler
     
-    ' --- 1. 设置工作表 ---
-    On Error GoTo ErrorHandler ' 启用错误处理
+    ' --- 1. 初始化设置 ---
     Set wsInput = ThisWorkbook.Sheets("输入")
     Set wsTrend = ThisWorkbook.Sheets("趋势")
+    Set dateColumnMap = CreateObject("Scripting.Dictionary")
     
-    ' 获取目标列的数字编号 (B=2)
-    TARGET_COL_NUM = wsTrend.Columns(TARGET_COL_LETTER).Column
-    
-    ' --- 2. 确定“输入”表的最后一行 ---
-    ' 假设日期在A列，行业在B列
+    ' 确定“输入”表的最后一行 (A列)
     lastRowInput = wsInput.Cells(Rows.Count, "A").End(xlUp).Row
     
     If lastRowInput < 2 Then
-        MsgBox "“输入”工作表数据不足，请检查 A 列和 B 列是否有数据。", vbExclamation
+        MsgBox "“输入”工作表数据不足。", vbExclamation
         Exit Sub
     End If
     
-    ' --- 3. 循环遍历“输入”表 ---
-    ' 从第2行开始循环 (假设第1行是标题)
+    ' 确定“趋势”表中开始添加新列的位置（A列之后的第一列）
+    currentTrendCol = wsTrend.Cells(1, wsTrend.Columns.Count).End(xlToLeft).Column + 1
+    If currentTrendCol = 1 Then currentTrendCol = 2 ' 确保至少从B列开始新增
+    
+    ' --- 2. 第一阶段：处理唯一日期并创建列标题 ---
+    ' 目标：为每个唯一的日期创建一列，并记录该日期对应的列号
+    
     For inputRow = 2 To lastRowInput
         
-        ' 获取日期 (A列)
+        ' 检查并格式化日期
         If IsDate(wsInput.Cells(inputRow, "A").Value) Then
-            ' 格式化日期作为列标题 (写入B列的第1行)
-            inputDate = Format(wsInput.Cells(inputRow, "A").Value, "yyyy/m/d")
+            inputDate = wsInput.Cells(inputRow, "A").Value
+            ' 使用标准格式化日期作为字典的唯一 Key
+            dateKey = Format(inputDate, "yyyy-mm-dd")
         Else
-            MsgBox "“输入”工作表第 " & inputRow & " 行的日期格式不正确，已跳过此行。", vbExclamation
-            GoTo NextIteration
+            GoTo NextInputRow
         End If
         
-        ' 获取行业名称 (B列)
+        ' 检查日期是否已存在于字典（即是否已创建列）
+        If Not dateColumnMap.Exists(dateKey) Then
+            
+            ' 1. 记录日期及其对应的列号
+            dateColumnMap.Add dateKey, currentTrendCol
+            
+            ' 2. 在“趋势”表的第1行写入列标题（日期）
+            wsTrend.Cells(1, currentTrendCol).Value = inputDate 
+            
+            ' 3. 移动到下一列的新增位置
+            currentTrendCol = currentTrendCol + 1
+            
+        End If
+        
+NextInputRow:
+    Next inputRow
+
+    ' 检查是否有列被创建
+    If dateColumnMap.Count = 0 Then
+        MsgBox "未在“输入”表中找到有效的日期数据。", vbInformation
+        Exit Sub
+    End If
+    
+    ' --- 3. 第二阶段：查找行业并应用高亮 ---
+    ' 目标：根据行业和日期定位，在高亮并清空对应的新列单元格
+    
+    For inputRow = 2 To lastRowInput
+        
+        ' 获取数据
+        If IsDate(wsInput.Cells(inputRow, "A").Value) Then
+            dateKey = Format(wsInput.Cells(inputRow, "A").Value, "yyyy-mm-dd")
+        Else
+            GoTo NextInputRow_Highlight
+        End If
+        
         industryName = Trim(wsInput.Cells(inputRow, "B").Value)
+        If industryName = "" Then GoTo NextInputRow_Highlight
         
-        If industryName = "" Then GoTo NextIteration ' 行业名称为空，跳过
-        
-        ' --- 4. 在“趋势”表中查找行业名称 (在A列) ---
+        ' 查找行业所在的行 (在趋势表A列)
         Set foundCell = wsTrend.Columns("A").Find( _
             What:=industryName, _
             LookIn:=xlValues, _
             LookAt:=xlWhole, _
             SearchOrder:=xlByRows)
             
-        ' --- 5. 如果找到行业，则更新标题并高亮 B 列对应单元格 ---
+        ' 如果找到行业，则进行高亮操作
         If Not foundCell Is Nothing Then
             
             trendRow = foundCell.Row
             
-            ' **更新 B 列的列标题 (在趋势表的第1行)**
-            ' 注意：如果多次运行宏，B列标题会被覆盖
-            wsTrend.Cells(1, TARGET_COL_NUM).Value = inputDate
+            ' 从字典获取该日期对应的列号
+            Dim highlightColNum As Long
+            highlightColNum = dateColumnMap.Item(dateKey)
             
-            ' **高亮显示对应单元格 (在 B 列中，与行业所在行交叉的单元格)**
-            With wsTrend.Cells(trendRow, TARGET_COL_NUM).Interior
-                .Pattern = xlSolid
-                .Color = vbRed ' 设置背景色为红色
+            ' 目标单元格：行业所在行 & 日期所在列
+            With wsTrend.Cells(trendRow, highlightColNum)
+                
+                ' 高亮显示为红色
+                .Interior.Color = vbRed
+                
+                ' 确保单元格内容为空白 (只保留高亮)
+                .ClearContents 
             End With
             
-            ' **关键：清除单元格内容，只保留高亮**
-            wsTrend.Cells(trendRow, TARGET_COL_NUM).ClearContents
-            
-        Else
-            ' 如果在“趋势”表中未找到该行业
-            ' MsgBox "在“趋势”表的A列中未找到行业: " & industryName, vbInformation
         End If
         
-NextIteration:
+NextInputRow_Highlight:
     Next inputRow
     
-    MsgBox "宏执行完毕！“趋势”工作表 B 列的标题已更新，对应行业单元格已高亮且内容已清空。", vbInformation
+    MsgBox "宏执行完毕！“趋势”工作表已根据唯一的日期和行业信息添加了 " & dateColumnMap.Count & " 列，并完成了高亮。", vbInformation
     Exit Sub
 
 ' --- 错误处理 ---
 ErrorHandler:
     MsgBox "执行宏时发生错误：" & Err.Description & vbCrLf & _
            "错误代码: " & Err.Number, vbCritical
+    
 End Sub
-
