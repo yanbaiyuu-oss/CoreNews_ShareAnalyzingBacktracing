@@ -34,7 +34,44 @@ B 列标题动态更新：
 易用性：一旦设置完成，用户只需运行一次宏，即可完成复杂的格式化和数据映射任务。
 
 VB代码：
-Sub AggregateAndHighlightByUniqueDate()
+
+Attribute VB_Name = "模块1"
+' ----------------------------------------------------------------------------------
+' 辅助函数：将颜色名称转换为 VBA 颜色代码
+' ----------------------------------------------------------------------------------
+Function GetVBAColorCode(colorName As String) As Long
+    
+    Dim lowerCaseName As String
+    lowerCaseName = LCase(Trim(colorName))
+    
+    Select Case lowerCaseName
+        Case "红", "红色", "red"
+            GetVBAColorCode = vbRed
+        Case "蓝", "蓝色", "blue"
+            GetVBAColorCode = vbBlue
+        Case "绿", "绿色", "green"
+            GetVBAColorCode = vbGreen
+        Case "黄", "黄色", "yellow"
+            GetVBAColorCode = vbYellow
+        Case "紫", "紫色", "magenta"
+            GetVBAColorCode = vbMagenta
+        Case "青", "青色", "cyan"
+            GetVBAColorCode = vbCyan
+        Case "白", "白色", "white"
+            GetVBAColorCode = vbWhite
+        Case "黑", "黑色", "black"
+            GetVBAColorCode = vbBlack
+        Case Else
+            ' 如果颜色名称无法识别，默认返回红色
+            GetVBAColorCode = vbRed
+    End Select
+    
+End Function
+
+' ----------------------------------------------------------------------------------
+' 主宏程序：根据唯一日期新增列，并根据C列颜色高亮
+' ----------------------------------------------------------------------------------
+Sub AggregateAndHighlightByUniqueDate_WithColor()
     
     ' 定义工作表变量
     Dim wsInput As Worksheet
@@ -45,10 +82,11 @@ Sub AggregateAndHighlightByUniqueDate()
     Dim inputRow As Long
     Dim inputDate As Date
     Dim industryName As String
+    Dim colorString As String
+    Dim highlightColor As Long ' 存储 VBA 颜色代码
     
     ' 定义字典对象，用于存储：唯一的日期键 -> 对应的列号
-    ' (注意: 使用 CreateObject 确保在大多数系统上都能运行，不需要额外引用)
-    Dim dateColumnMap As Object 
+    Dim dateColumnMap As Object
     
     Dim currentTrendCol As Long ' 用于追踪下一列的新增位置
     Dim trendRow As Long
@@ -74,57 +112,52 @@ Sub AggregateAndHighlightByUniqueDate()
     currentTrendCol = wsTrend.Cells(1, wsTrend.Columns.Count).End(xlToLeft).Column + 1
     If currentTrendCol = 1 Then currentTrendCol = 2 ' 确保至少从B列开始新增
     
-    ' --- 2. 第一阶段：处理唯一日期并创建列标题 ---
-    ' 目标：为每个唯一的日期创建一列，并记录该日期对应的列号
-    
+    ' --- 2. 第一阶段：处理唯一日期并创建列标题（与前一版相同） ---
     For inputRow = 2 To lastRowInput
         
-        ' 检查并格式化日期
         If IsDate(wsInput.Cells(inputRow, "A").Value) Then
             inputDate = wsInput.Cells(inputRow, "A").Value
-            ' 使用标准格式化日期作为字典的唯一 Key
             dateKey = Format(inputDate, "yyyy-mm-dd")
         Else
             GoTo NextInputRow
         End If
         
-        ' 检查日期是否已存在于字典（即是否已创建列）
         If Not dateColumnMap.Exists(dateKey) Then
-            
-            ' 1. 记录日期及其对应的列号
             dateColumnMap.Add dateKey, currentTrendCol
             
-            ' 2. 在“趋势”表的第1行写入列标题（日期）
-            wsTrend.Cells(1, currentTrendCol).Value = inputDate 
+            ' 写入日期作为列标题
+            wsTrend.Cells(1, currentTrendCol).Value = inputDate
             
-            ' 3. 移动到下一列的新增位置
             currentTrendCol = currentTrendCol + 1
-            
         End If
         
 NextInputRow:
     Next inputRow
 
-    ' 检查是否有列被创建
     If dateColumnMap.Count = 0 Then
         MsgBox "未在“输入”表中找到有效的日期数据。", vbInformation
         Exit Sub
     End If
     
-    ' --- 3. 第二阶段：查找行业并应用高亮 ---
-    ' 目标：根据行业和日期定位，在高亮并清空对应的新列单元格
-    
+    ' --- 3. 第二阶段：查找行业并根据C列颜色应用高亮 ---
     For inputRow = 2 To lastRowInput
         
-        ' 获取数据
+        ' ---------------------------------------------------
+        ' 关键变更：读取C列的颜色并转换
+        ' ---------------------------------------------------
+        
+        ' 获取行业名称 (B列) 和颜色字符串 (C列)
+        industryName = Trim(wsInput.Cells(inputRow, "B").Value)
+        colorString = wsInput.Cells(inputRow, "C").Value
+        
+        If industryName = "" Then GoTo NextInputRow_Highlight
+        
+        ' 检查日期是否有效并获取日期键
         If IsDate(wsInput.Cells(inputRow, "A").Value) Then
             dateKey = Format(wsInput.Cells(inputRow, "A").Value, "yyyy-mm-dd")
         Else
             GoTo NextInputRow_Highlight
         End If
-        
-        industryName = Trim(wsInput.Cells(inputRow, "B").Value)
-        If industryName = "" Then GoTo NextInputRow_Highlight
         
         ' 查找行业所在的行 (在趋势表A列)
         Set foundCell = wsTrend.Columns("A").Find( _
@@ -138,18 +171,21 @@ NextInputRow:
             
             trendRow = foundCell.Row
             
-            ' 从字典获取该日期对应的列号
+            ' 获取该日期对应的列号
             Dim highlightColNum As Long
             highlightColNum = dateColumnMap.Item(dateKey)
+            
+            ' 调用辅助函数获取颜色代码
+            highlightColor = GetVBAColorCode(colorString)
             
             ' 目标单元格：行业所在行 & 日期所在列
             With wsTrend.Cells(trendRow, highlightColNum)
                 
-                ' 高亮显示为红色
-                .Interior.Color = vbRed
+                ' 应用C列指定的颜色
+                .Interior.Color = highlightColor
                 
                 ' 确保单元格内容为空白 (只保留高亮)
-                .ClearContents 
+                .ClearContents
             End With
             
         End If
@@ -157,12 +193,12 @@ NextInputRow:
 NextInputRow_Highlight:
     Next inputRow
     
-    MsgBox "宏执行完毕！“趋势”工作表已根据唯一的日期和行业信息添加了 " & dateColumnMap.Count & " 列，并完成了高亮。", vbInformation
+    MsgBox "宏执行完毕！“趋势”工作表已根据唯一的日期添加列，并根据C列指定的颜色完成了高亮。", vbInformation
     Exit Sub
 
 ' --- 错误处理 ---
 ErrorHandler:
     MsgBox "执行宏时发生错误：" & Err.Description & vbCrLf & _
-           "错误代码: " & Err.Number, vbCritical
-    
+           "错误代码: " & Err.Number & vbCrLf & "请检查您的工作表名称、数据格式和颜色名称是否正确。", vbCritical
 End Sub
+
