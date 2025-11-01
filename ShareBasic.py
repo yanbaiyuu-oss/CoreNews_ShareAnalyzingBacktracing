@@ -350,11 +350,11 @@ class DataProcessor:
         return final_df[final_cols + other_cols]
 
     def process_spot_data(self, spot_data_all: pd.DataFrame, filtered_codes_df: pd.DataFrame) -> pd.DataFrame:
-        """处理实时行情数据，并确保价格列名为'当前价格'。"""
-        # 注意：这里的spot_data_all已经从 fetch_with_cache 返回，可能已经是清洗后的缓存
-        # 即使再次调用 clean_data，如果命中清洗缓存，它也会直接返回。
-        # 关键是确保这里 clean_data 的 base_name 和 fetch_with_cache 时传入的保持一致。
-        spot_data_all = self.clean_data(spot_data_all, "A股实时行情")  # 这里处理主接口数据
+        """
+        处理实时行情数据，确保价格列名为'当前价格'，并标准化 '市盈率-动态' 字段。
+        """
+        # 实时行情数据清洗
+        spot_data_all = self.clean_data(spot_data_all, "A股实时行情")
 
         # 还需要处理备用接口的数据，如果存在的话
         spot_data_fallback = self.fetcher.fetch_with_cache(ak.stock_zh_a_spot, 'A股实时行情_备用')
@@ -372,10 +372,29 @@ class DataProcessor:
             spot_data_all.rename(columns={'最新价': '当前价格'}, inplace=True)
         elif '现价' in spot_data_all.columns:
             spot_data_all.rename(columns={'现价': '当前价格'}, inplace=True)
+        
+        # 【修改点 A: 确保并标准化动态市盈率字段】
+        if '市盈率-动态' in spot_data_all.columns:
+            spot_data_all.rename(columns={'市盈率-动态': '动态市盈率'}, inplace=True)
+        else:
+            # 如果没有找到，则创建空列，防止后续合并失败
+            spot_data_all['动态市盈率'] = np.nan
 
-        # 确保合并后保留'股票代码'和'当前价格'
-        filtered_spot_data = pd.merge(spot_data_all, filtered_codes_df[['股票代码', '完整股票编码']], on='股票代码',
-                                      how='inner')
+
+        # 确保合并后保留'股票代码'、'当前价格'和'动态市盈率'
+        cols_to_keep = ['股票代码', '股票简称', '当前价格', '动态市盈率']
+        
+        # 仅保留清洗后数据中包含的列
+        cols_to_keep_final = [col for col in cols_to_keep if col in spot_data_all.columns]
+
+        # 仅合并需要的列
+        filtered_spot_data = pd.merge(
+            spot_data_all[cols_to_keep_final], 
+            filtered_codes_df[['股票代码', '完整股票编码']], 
+            on='股票代码',
+            how='inner'
+        )
+        
         return filtered_spot_data
 
     def process_financial_abstract(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -401,7 +420,12 @@ class DataProcessor:
 
     def process_general_rank(self, df: pd.DataFrame, name: str) -> pd.DataFrame:
         """通用排行榜数据处理，添加股票代码和编码。"""
-        return self.clean_data(df, name)
+        # 注意：这里 name 参数是 file_base_name
+        cleaned_df = self.clean_data(df, name)
+        if not cleaned_df.empty and '股票代码' in cleaned_df.columns:
+            # 对于排行榜数据，可能需要添加完整股票编码
+            cleaned_df['完整股票编码'] = cleaned_df['股票代码'].apply(format_stock_code)
+        return cleaned_df
 
     def process_board_data(self, df: pd.DataFrame) -> pd.DataFrame:
         """通用板块数据处理，进行清洗和标准化。"""
@@ -639,24 +663,26 @@ class DataProcessor:
                                            rsi_df: pd.DataFrame, strong_stocks_df: pd.DataFrame,
                                            filtered_spot: pd.DataFrame,
                                            consecutive_rise_df: pd.DataFrame,
-                                           # 新增 ADX 和 BOLL 参数
-                                           adx_df: pd.DataFrame, boll_df: pd.DataFrame) -> pd.DataFrame:
-        """基于多因子评分筛选推荐股票。"""
+                                           adx_df: pd.DataFrame, boll_df: pd.DataFrame,
+                                           ljqs_df: pd.DataFrame) -> pd.DataFrame:
+        """基于多因子评分筛选推荐股票。增加了 ljqs_df (量价齐升) 参数。"""
         print("\n正在基于多因子评分筛选推荐股票...")
 
-        # 1. 将新指标加入到待合并列表
-        input_dfs = [macd_df, cci_df, xstp_df, rsi_df, adx_df, boll_df]
+        # 1. 将所有指标加入到待合并列表
+        input_dfs = [macd_df, cci_df, xstp_df, rsi_df, adx_df, boll_df, ljqs_df]
 
         df_to_concat = []
         for df in input_dfs:
+            # 只有当 DataFrame 不为空且包含 '股票代码' 和 '股票简称' 时才合并
             if not df.empty and '股票代码' in df.columns and '股票简称' in df.columns:
                 df_to_concat.append(df[['股票代码', '股票简称']].copy())
 
         if not df_to_concat:
             print("[WARN] 未找到任何符合任一条件的股票。")
-            return pd.DataFrame(columns=['股票代码', '股票简称', '符合条件数量', 'MACD买卖信号',
+            # 返回包含所有可能列的空 DataFrame，方便后续操作
+            return pd.DataFrame(columns=['股票代码', '股票简称', '动态市盈率', '符合条件数量', 'MACD买卖信号', 
                                          'CCI买卖信号', 'RSI买卖信号', '均线多头排列',
-                                         'ADX趋势强度', 'BOLL波动性信号',  # 新增列
+                                         'ADX趋势强度', 'BOLL波动性信号', '量价齐升信号',  # 新增列
                                          '强势股池', '连涨天数', '当前价格', '股票链接'])
 
         all_codes = pd.concat(df_to_concat, ignore_index=True).drop_duplicates()
@@ -674,8 +700,11 @@ class DataProcessor:
         final_df['CCI买卖信号'] = '未满足'
         final_df['RSI买卖信号'] = '未满足'
         final_df['均线多头排列'] = '未满足'
-        final_df['ADX趋势强度'] = '未满足'  # 新增初始化 ADX 列
-        final_df['BOLL波动性信号'] = '未满足'  # 新增初始化 BOLL 列
+        final_df['ADX趋势强度'] = '未满足'
+        final_df['BOLL波动性信号'] = '未满足'
+        final_df['量价齐升信号'] = '未满足'  # 新增初始化 量价齐升 列
+        final_df['动态市盈率'] = np.nan       # 【修改点 B: 初始化动态市盈率列】
+
 
         def update_df(source_df: pd.DataFrame, column_name: str, check_col: str = None):
             if '股票代码' not in source_df.columns:
@@ -687,7 +716,7 @@ class DataProcessor:
                     final_df.loc[final_df['股票代码'] == code, '符合条件数量'] += 1
 
                     # 更新信号列
-                    if check_col:
+                    if check_col and check_col in source_df.columns:
                         signal_val = source_df[source_df['股票代码'] == code].iloc[0][check_col]
                         final_df.loc[final_df['股票代码'] == code, column_name] = signal_val
                     else:
@@ -697,9 +726,14 @@ class DataProcessor:
         update_df(cci_df, 'CCI买卖信号', 'CCI买卖信号')
         update_df(rsi_df, 'RSI买卖信号', 'RSI买卖信号')
         update_df(xstp_df, '均线多头排列')
-        # 新增 ADX 和 BOLL 的更新
         update_df(adx_df, 'ADX趋势强度', 'ADX买卖信号')
         update_df(boll_df, 'BOLL波动性信号', 'BOLL买卖信号')
+        # 新增 量价齐升 的更新
+        if not ljqs_df.empty:
+            # 量价齐升的信号列可以显示“量价齐升天数”
+            ljqs_df['量价齐升信号'] = '量价齐升: ' + ljqs_df['量价齐升天数'].astype(str) + '天'
+            update_df(ljqs_df, '量价齐升信号', '量价齐升信号')
+
 
         # 强势股池
         strong_stocks_codes = set(strong_stocks_df[
@@ -720,8 +754,20 @@ class DataProcessor:
             final_df = pd.merge(final_df, filtered_spot[['股票代码', '当前价格']], on='股票代码', how='left')
         else:
             final_df['当前价格'] = 'N/A'
-
+            
         final_df['当前价格'] = final_df['当前价格'].fillna('N/A')
+
+        # 【修改点 C: 合并动态市盈率数据】
+        if '动态市盈率' in filtered_spot.columns:
+            # 仅在 final_df 中还未被填充的地方，从 filtered_spot 获取数据
+            final_df.drop(columns=['动态市盈率'], inplace=True, errors='ignore') # 移除初始化的np.nan列
+            final_df = pd.merge(final_df, filtered_spot[['股票代码', '动态市盈率']], on='股票代码', how='left')
+            # 格式化动态市盈率
+            final_df['动态市盈率'] = final_df['动态市盈率'].apply(
+                lambda x: f"{float(x):.2f}" if pd.notna(x) and str(x).replace('.', '', 1).isdigit() else 'N/A')
+        else:
+            final_df['动态市盈率'] = 'N/A'
+
 
         # 增加完整股票编码列用于链接生成
         final_df['完整股票编码'] = final_df['股票代码'].apply(format_stock_code)
@@ -734,12 +780,15 @@ class DataProcessor:
         recommended_df = final_df[final_df['符合条件数量'] >= 1].sort_values(by='符合条件数量',
                                                                              ascending=False).reset_index(
             drop=True)
+        # 将 NaN 填充为 N/A (除了价格和市盈率，它们已在上面处理或格式化)
+        for col in ['MACD买卖信号', 'CCI买卖信号', 'RSI买卖信号', '均线多头排列', 'ADX趋势强度', 'BOLL波动性信号', '量价齐升信号']:
+            recommended_df[col] = recommended_df[col].fillna('未满足')
         recommended_df.fillna('N/A', inplace=True)
 
         # 确保列顺序
-        final_cols_order = ['股票代码', '股票简称', '符合条件数量', 'MACD买卖信号',
-                            'CCI买卖信号', 'RSI买卖信号', '均线多头排列',
-                            'ADX趋势强度', 'BOLL波动性信号',  # 新增列
+        final_cols_order = ['股票代码', '股票简称', '动态市盈率', # 【修改点 D: 动态市盈率前置】
+                            '符合条件数量', 'MACD买卖信号', 'CCI买卖信号', 'RSI买卖信号',
+                            '均线多头排列', 'ADX趋势强度', 'BOLL波动性信号', '量价齐升信号', 
                             '强势股池', '连涨天数', '当前价格', '股票链接']
 
         # 仅保留在 DataFrame 中存在的列
@@ -773,6 +822,7 @@ class ExcelReporter:
             self.red_format = self.workbook.add_format({'border': 1, 'font_color': 'red'})
             self.green_format = self.workbook.add_format({'border': 1, 'font_color': 'green'})
             self.yellow_format = self.workbook.add_format({'border': 1, 'bg_color': '#FFFF00'})  # 新增黄色格式
+            self.blue_format = self.workbook.add_format({'border': 1, 'font_color': 'blue'}) # 新增蓝色格式
         except Exception as e:
             print(f"[FATAL] 错误：无法初始化 Excel 写入器: {e}")
             self.writer = None
@@ -828,6 +878,7 @@ class ExcelReporter:
                         for row_num, value in enumerate(df[col_name], 1):
                             # 使用 try-except 来处理可能出现的格式化错误
                             try:
+                                # 检查条件是否满足
                                 if condition['check'](value):
                                     worksheet.write(row_num, col_idx, value, condition['format'])
                                 else:
@@ -851,9 +902,11 @@ class ExcelReporter:
                 {'column': 'MACD买卖信号', 'check': lambda x: '金叉' in str(x), 'format': self.red_format},
                 {'column': 'CCI买卖信号', 'check': lambda x: '超卖' in str(x), 'format': self.green_format},
                 {'column': 'RSI买卖信号', 'check': lambda x: '金叉' in str(x), 'format': self.red_format},
-                # 新增 ADX 和 BOLL 的条件格式
                 {'column': 'ADX趋势强度', 'check': lambda x: '强势' in str(x), 'format': self.red_format},
-                {'column': 'BOLL波动性信号', 'check': lambda x: '低波动买入' in str(x), 'format': self.yellow_format}]},
+                {'column': 'BOLL波动性信号', 'check': lambda x: '低波动买入' in str(x), 'format': self.yellow_format},
+                # 新增 量价齐升 的条件格式：突出显示
+                {'column': '量价齐升信号', 'check': lambda x: '量价齐升' in str(x), 'format': self.blue_format}
+            ]},
             '主力研报筛选': {'df': sheets_data.get('主力研报筛选'), 'link_col': '股票链接', 'conditional_format': None},
             '财务摘要数据': {'df': sheets_data.get('财务摘要数据'), 'link_col': None, 'conditional_format': None},
             '实时行情': {'df': sheets_data.get('实时行情'), 'link_col': None, 'conditional_format': None},
@@ -870,11 +923,13 @@ class ExcelReporter:
                 {'column': 'CCI买卖信号', 'check': lambda x: '超卖' in str(x), 'format': self.green_format}]},
             'RSI金叉': {'df': sheets_data.get('RSI金叉'), 'link_col': None, 'conditional_format': [
                 {'column': 'RSI买卖信号', 'check': lambda x: '金叉' in str(x), 'format': self.red_format}]},
-            # 新增工作表
             'ADX强势': {'df': sheets_data.get('ADX强势'), 'link_col': None, 'conditional_format': [
                 {'column': 'ADX买卖信号', 'check': lambda x: '强势' in str(x), 'format': self.red_format}]},
             'BOLL低波': {'df': sheets_data.get('BOLL低波'), 'link_col': None, 'conditional_format': [
                 {'column': 'BOLL买卖信号', 'check': lambda x: '买入' in str(x), 'format': self.yellow_format}]},
+            # 新增工作表
+            '量价齐升': {'df': sheets_data.get('量价齐升'), 'link_col': None, 'conditional_format': [
+                {'column': '量价齐升天数', 'check': lambda x: pd.to_numeric(x, errors='coerce') >= 3, 'format': self.blue_format}]},
         }
         try:
             for sheet_name, spec in sheet_specs.items():
@@ -940,26 +995,34 @@ class StockDataPipeline:
             market_fund_flow_raw = self.fetcher.fetch_with_cache(ak.stock_fund_flow_individual, '市场资金流向',
                                                                  symbol="5日排行")
             industry_board_df = self.fetcher.fetch_with_cache(ak.stock_board_industry_name_em, '行业板块名称')
-            financial_abstract_df = self.fetcher.fetch_with_cache(ak.stock_financial_abstract, '财务摘要数据')
+            # financial_abstract_df = self.fetcher.fetch_with_cache(ak.stock_financial_abstract, '财务摘要数据') # PEG计算逻辑已移除
             strong_stocks_df_raw = self.fetcher.fetch_with_cache(ak.stock_rank_ljqd_ths, '强势股池')
             consecutive_rise_df_raw = self.fetcher.fetch_with_cache(ak.stock_rank_lxsz_ths, '连续上涨')
             df_ma20 = self.fetcher.fetch_with_cache(ak.stock_rank_xstp_ths, '向上突破20日均线', symbol="20日均线")
             df_ma60 = self.fetcher.fetch_with_cache(ak.stock_rank_xstp_ths, '向上突破60日均线', symbol="60日均线")
             df_ma90 = self.fetcher.fetch_with_cache(ak.stock_rank_xstp_ths, '向上突破90日均线', symbol="90日均线")
+            # 新增 量价齐升 数据获取
+            ljqs_df_raw = self.fetcher.fetch_with_cache(ak.stock_rank_ljqs_ths, '量价齐升')
+
 
             print("\n>>> 正在进行数据处理和筛选...")
 
             # --- 清洗和预处理 ---
             processed_profit_data = self.processor.process_profit_data(profit_data_raw)
-            processed_spot_data_cleaned = self.processor.clean_data(spot_data_all, "A股实时行情")
+            # 这里的 processed_spot_data_cleaned 只是用于生成研报筛选表的"最新价"
+            processed_spot_data_cleaned = self.processor.clean_data(spot_data_all, "A股实时行情") 
+            
+            # filtered_spot 包含了 '当前价格' 和 '动态市盈率' 
+            filtered_spot = self.processor.process_spot_data(spot_data_all, processed_profit_data)
 
             main_report_sheet = self.processor.process_main_report_sheet(processed_profit_data,
                                                                          processed_spot_data_cleaned)
-            filtered_spot = self.processor.process_spot_data(processed_spot_data_cleaned, processed_profit_data)
-            processed_financial_abstract = self.processor.process_financial_abstract(financial_abstract_df)
+            # processed_financial_abstract = self.processor.process_financial_abstract(financial_abstract_df) # PEG计算逻辑已移除
             processed_market_fund_flow = self.processor.process_market_fund_flow(market_fund_flow_raw)
             processed_strong_stocks = self.processor.process_general_rank(strong_stocks_df_raw, '强势股池')
             processed_consecutive_rise = self.processor.process_general_rank(consecutive_rise_df_raw, '连续上涨')
+            # 新增 量价齐升 数据清洗
+            processed_ljqs = self.processor.process_general_rank(ljqs_df_raw, '量价齐升')
 
             # 使用新的获取方法
             top_industry_cons_df = self.fetcher.get_top_industry_stocks()
@@ -971,12 +1034,18 @@ class StockDataPipeline:
             all_ta_codes = set(processed_profit_data['股票代码'].tolist())
             if not processed_xstp_df.empty:
                 all_ta_codes.update(processed_xstp_df['股票代码'].tolist())
+            
+            # 增加量价齐升的股票代码到技术分析列表，便于查找股票简称
+            if not processed_ljqs.empty:
+                all_ta_codes.update(processed_ljqs['股票代码'].tolist())
 
             all_ta_codes = [code for code in all_ta_codes if pd.notna(code)]
 
             # 用于技术指标名称查找的源DataFrame
+            # 注意：这里只需要股票代码和简称，其他实时数据（如PE）直接从 filtered_spot 获取
             ta_source_df = pd.concat([processed_profit_data[['股票代码', '股票简称']].drop_duplicates(),
-                                      processed_xstp_df[['股票代码', '股票简称']].drop_duplicates()],
+                                      processed_xstp_df[['股票代码', '股票简称']].drop_duplicates(),
+                                      processed_ljqs[['股票代码', '股票简称']].drop_duplicates()], 
                                      ignore_index=True).drop_duplicates()
 
             # 并行获取历史数据
@@ -989,20 +1058,20 @@ class StockDataPipeline:
             macd_df = technical_results['macd_df']
             cci_df = technical_results['cci_df']
             rsi_df = technical_results['rsi_df']
-            # 新增 ADX 和 BOLL
             adx_df = technical_results['adx_df']
             boll_df = technical_results['boll_df']
 
             # --- 最终推荐和报告生成 ---
+            # 【修改点 E: 传入 filtered_spot 用于获取动态市盈率】
             recommended_stocks = self.processor.find_recommended_stocks_with_score(
                 macd_df, cci_df, processed_xstp_df, rsi_df, processed_strong_stocks,
                 filtered_spot, processed_consecutive_rise,
-                adx_df, boll_df  # 传入新的 ADX 和 BOLL
+                adx_df, boll_df, processed_ljqs
             )
 
             sheets_data = {
                 '主力研报筛选': main_report_sheet,
-                '财务摘要数据': processed_financial_abstract,
+                # '财务摘要数据': processed_financial_abstract, # PEG计算逻辑已移除
                 '实时行情': filtered_spot,
                 '行业板块': industry_board_df,  # 行业板块名称数据不涉及清洗
                 '市场资金流向': processed_market_fund_flow,
@@ -1014,9 +1083,10 @@ class StockDataPipeline:
                 'MACD金叉': macd_df,
                 'CCI超卖': cci_df,
                 'RSI金叉': rsi_df,
-                # 新增工作表
                 'ADX强势': adx_df,
                 'BOLL低波': boll_df,
+                # 新增工作表
+                '量价齐升': processed_ljqs,
                 '指标汇总': recommended_stocks,
             }
             self.reporter.generate_report(sheets_data)
