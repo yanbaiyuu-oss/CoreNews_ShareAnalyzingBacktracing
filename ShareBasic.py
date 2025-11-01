@@ -336,18 +336,28 @@ class DataProcessor:
         return df
 
     def process_main_report_sheet(self, profit_df: pd.DataFrame, spot_df: pd.DataFrame) -> pd.DataFrame:
-        """生成“主力研报筛选” Sheet 的数据。"""
-        if profit_df.empty or spot_df.empty:
-            print("[WARN] 研报数据或实时行情数据为空，无法生成主力研报筛选表。")
+        """生成“主力研报筛选” Sheet 的数据，不再包含股票链接、最新价、序号。"""
+        if profit_df.empty:
+            print("[WARN] 研报数据为空，无法生成主力研报筛选表。")
             return pd.DataFrame()
-        # 注意：这里 spot_df 中使用的价格列名是 '最新价'
-        final_df = pd.merge(profit_df, spot_df[['股票代码', '最新价']], on='股票代码', how='left')
-        final_df['最新价'] = final_df['最新价'].fillna('N/A')
-        final_df['股票链接'] = 'https://hybrid.gelonghui.com/stock-check/' + final_df['完整股票编码'].astype(
-            str).str.lower()
-        final_cols = ['股票代码', '完整股票编码', '股票链接', '最新价']
-        other_cols = [col for col in final_df.columns if col not in final_cols]
-        return final_df[final_cols + other_cols]
+        
+        # 1. 使用 profit_df 的拷贝作为基础，不再合并 spot_df 中的 '最新价'
+        final_df = profit_df.copy() 
+        
+        # 2. 移除不再需要的列：'完整股票编码'（曾用于生成股票链接）
+        cols_to_drop = ['完整股票编码'] 
+        
+        for col in cols_to_drop:
+            if col in final_df.columns:
+                final_df.drop(columns=[col], inplace=True)
+
+        # 3. 确保 '股票代码' 和 '股票简称' 在最前面
+        leading_cols = ['股票代码', '股票简称']
+        existing_leading_cols = [col for col in leading_cols if col in final_df.columns]
+        other_cols = [col for col in final_df.columns if col not in existing_leading_cols]
+        
+        # 返回最终筛选后的 DataFrame
+        return final_df[existing_leading_cols + other_cols]
 
     def process_spot_data(self, spot_data_all: pd.DataFrame, filtered_codes_df: pd.DataFrame) -> pd.DataFrame:
         """处理实时行情数据，并确保价格列名为'当前价格'。"""
@@ -861,7 +871,8 @@ class ExcelReporter:
                 # >> 新增量价齐升条件格式
                 {'column': '量价齐升信号', 'check': lambda x: '已满足' in str(x), 'format': self.yellow_format}
             ]},
-            '主力研报筛选': {'df': sheets_data.get('主力研报筛选'), 'link_col': '股票链接', 'conditional_format': None},
+            # '主力研报筛选' 不再包含链接和价格
+            '主力研报筛选': {'df': sheets_data.get('主力研报筛选'), 'link_col': None, 'conditional_format': None},
             '财务摘要数据': {'df': sheets_data.get('财务摘要数据'), 'link_col': None, 'conditional_format': None},
             '实时行情': {'df': sheets_data.get('实时行情'), 'link_col': None, 'conditional_format': None},
             '行业板块': {'df': sheets_data.get('行业板块'), 'link_col': None, 'conditional_format': None},
@@ -949,6 +960,7 @@ class StockDataPipeline:
             # spot_data_all 将在 process_spot_data 中被清洗
             processed_spot_data_cleaned = self.processor.clean_data(spot_data_all, "A股实时行情")
 
+            # 调用修改后的 process_main_report_sheet
             main_report_sheet = self.processor.process_main_report_sheet(processed_profit_data,
                                                                          processed_spot_data_cleaned)
             # process_spot_data 内部不再获取备用接口数据
