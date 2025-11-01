@@ -811,7 +811,7 @@ class ExcelReporter:
                     try:
                         if link and link not in ('N/A', '链接无效'):
                             # 写入链接，显示文本为 '链接' 或 '点击链接'
-                            display_text = '点击链接' if sheet_name == '指标汇总' else '链接'
+                            display_text = link if sheet_name == '指标汇总' else '链接'
                             worksheet.write_url(row_num, link_col_idx, str(link), self.link_format, display_text)
                         else:
                             worksheet.write(row_num, link_col_idx, 'N/A', self.text_format)
