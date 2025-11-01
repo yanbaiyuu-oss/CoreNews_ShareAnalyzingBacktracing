@@ -351,18 +351,9 @@ class DataProcessor:
 
     def process_spot_data(self, spot_data_all: pd.DataFrame, filtered_codes_df: pd.DataFrame) -> pd.DataFrame:
         """处理实时行情数据，并确保价格列名为'当前价格'。"""
-        # 注意：这里的spot_data_all已经从 fetch_with_cache 返回，可能已经是清洗后的缓存
-        # 即使再次调用 clean_data，如果命中清洗缓存，它也会直接返回。
-        # 关键是确保这里 clean_data 的 base_name 和 fetch_with_cache 时传入的保持一致。
-        spot_data_all = self.clean_data(spot_data_all, "A股实时行情")  # 这里处理主接口数据
-
-        # 还需要处理备用接口的数据，如果存在的话
-        spot_data_fallback = self.fetcher.fetch_with_cache(ak.stock_zh_a_spot, 'A股实时行情_备用')
-        if not spot_data_fallback.empty:
-            spot_data_fallback = self.clean_data(spot_data_fallback, 'A股实时行情_备用')
-            # 将备用数据与主数据合并，优先保留主数据
-            spot_data_all = pd.concat([spot_data_all, spot_data_fallback]).drop_duplicates(subset=['股票代码'],
-                                                                                           keep='first')
+        # --- 核心修改：移除备用接口的获取和合并逻辑 ---
+        # 仅处理传入的主接口数据
+        spot_data_all = self.clean_data(spot_data_all, "A股实时行情")
 
         if spot_data_all.empty or filtered_codes_df.empty:
             return pd.DataFrame()
@@ -377,6 +368,7 @@ class DataProcessor:
         filtered_spot_data = pd.merge(spot_data_all, filtered_codes_df[['股票代码', '完整股票编码']], on='股票代码',
                                       how='inner')
         return filtered_spot_data
+        # -----------------------------------------------
 
     def process_financial_abstract(self, df: pd.DataFrame) -> pd.DataFrame:
         """处理财务摘要数据，进行清洗和格式化。"""
@@ -930,8 +922,10 @@ class StockDataPipeline:
         print(f">>> 系统启动@{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         try:
             print("\n>>> 正在获取A股实时行情...")
-
+            # --- 核心修改：仅使用 ak.stock_zh_a_spot ---
             spot_data_all = self.fetcher.fetch_with_cache(ak.stock_zh_a_spot, 'A股实时行情')
+            # -----------------------------------------------
+
             if spot_data_all.empty:
                 print("\n[ERROR] 实时行情接口均失败，后续流程可能受影响。")
 
@@ -952,11 +946,13 @@ class StockDataPipeline:
 
             # --- 清洗和预处理 ---
             processed_profit_data = self.processor.process_profit_data(profit_data_raw)
+            # spot_data_all 将在 process_spot_data 中被清洗
             processed_spot_data_cleaned = self.processor.clean_data(spot_data_all, "A股实时行情")
 
             main_report_sheet = self.processor.process_main_report_sheet(processed_profit_data,
                                                                          processed_spot_data_cleaned)
-            filtered_spot = self.processor.process_spot_data(processed_spot_data_cleaned, processed_profit_data)
+            # process_spot_data 内部不再获取备用接口数据
+            filtered_spot = self.processor.process_spot_data(spot_data_all, processed_profit_data)
             processed_financial_abstract = self.processor.process_financial_abstract(financial_abstract_df)
             processed_market_fund_flow = self.processor.process_market_fund_flow(market_fund_flow_raw)
             processed_strong_stocks = self.processor.process_general_rank(strong_stocks_df_raw, '强势股池')
