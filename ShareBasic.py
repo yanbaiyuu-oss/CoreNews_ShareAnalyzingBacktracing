@@ -713,15 +713,16 @@ class DataProcessor:
         if not ljqs_df.empty and '量价齐升天数' in ljqs_df.columns and '股票代码' in ljqs_df.columns:
             ljqs_df_temp = ljqs_df[['股票代码', '量价齐升天数']].copy()
             # 确保填充了 0
-            ljqs_df_temp['量价齐升天数'] = pd.to_numeric(ljqs_df_temp['量价齐升天数'], errors='coerce').fillna(0).astype(int)
+            ljqs_df_temp['量价齐升天数'] = pd.to_numeric(ljqs_df_temp['量价齐升天数'], errors='coerce').fillna(
+                0).astype(int)
             final_df = pd.merge(final_df, ljqs_df_temp, on='股票代码', how='left', suffixes=('', '_ljqs'))
             # 确保最终列名正确，并填充 0
             if '量价齐升天数_ljqs' in final_df.columns:
                 final_df['量价齐升天数'] = final_df['量价齐升天数_ljqs'].fillna(0).astype(int)
                 final_df.drop(columns=['量价齐升天数_ljqs'], inplace=True)
             elif '量价齐升天数' not in final_df.columns:
-                 final_df['量价齐升天数'] = 0
-            
+                final_df['量价齐升天数'] = 0
+
         else:
             final_df['量价齐升天数'] = 0
 
@@ -858,7 +859,7 @@ class ExcelReporter:
             return
 
         print("\n>>> 正在生成Excel报告...")
-        # 移除 ADX 相关的条件格式和工作表
+
         sheet_specs = {
             '指标汇总': {'df': sheets_data.get('指标汇总'), 'link_col': '股票链接', 'conditional_format': [
                 {'column': 'MACD买卖信号', 'check': lambda x: '金叉' in str(x), 'format': self.red_format},
@@ -924,29 +925,15 @@ class StockDataPipeline:
         self.reporter = ExcelReporter(self.config)
 
     def run(self):
-        """执行整个分析流程。"""
+
         start_time = time.time()
-        print(f">>> 股票数据分析流程启动... 当前时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        print(f">>> 系统启动@{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         try:
-            print("\n>>> 正在获取基础数据...")
+            print("\n>>> 正在获取A股实时行情...")
 
-            # --- 实时行情数据获取及备用接口逻辑 ---
-            # 尝试主接口
-            spot_data_all = self.fetcher.fetch_with_cache(ak.stock_zh_a_spot_em, 'A股实时行情')
-
+            spot_data_all = self.fetcher.fetch_with_cache(ak.stock_zh_a_spot, 'A股实时行情')
             if spot_data_all.empty:
-                print(
-                    "\n[WARN] 警告：使用接口 ak.stock_zh_a_spot_em 获取A股实时行情失败，尝试使用备用接口 ak.stock_zh_a_spot。")
-                # 尝试备用接口
-                spot_data_all_fallback = self.fetcher.fetch_with_cache(ak.stock_zh_a_spot, 'A股实时行情_备用')
-
-                # 如果备用接口成功，则使用备用数据
-                if not spot_data_all_fallback.empty:
-                    spot_data_all = spot_data_all_fallback
-
-            if spot_data_all.empty:
-                print("\n[ERROR] 错误：所有实时行情接口均失败，后续流程可能受影响。")
-            # ----------------------------------------
+                print("\n[ERROR] 实时行情接口均失败，后续流程可能受影响。")
 
             # 获取其他原始数据
             profit_data_raw = self.fetcher.fetch_with_cache(ak.stock_profit_forecast_em, '主力研报盈利预测')
@@ -959,10 +946,7 @@ class StockDataPipeline:
             df_ma20 = self.fetcher.fetch_with_cache(ak.stock_rank_xstp_ths, '向上突破20日均线', symbol="20日均线")
             df_ma60 = self.fetcher.fetch_with_cache(ak.stock_rank_xstp_ths, '向上突破60日均线', symbol="60日均线")
             df_ma90 = self.fetcher.fetch_with_cache(ak.stock_rank_xstp_ths, '向上突破90日均线', symbol="90日均线")
-            
-            # >> 新增：获取量价齐升数据
             ljqs_df_raw = self.fetcher.fetch_with_cache(ak.stock_rank_ljqs_ths, '量价齐升')
-
 
             print("\n>>> 正在进行数据处理和筛选...")
 
@@ -977,10 +961,9 @@ class StockDataPipeline:
             processed_market_fund_flow = self.processor.process_market_fund_flow(market_fund_flow_raw)
             processed_strong_stocks = self.processor.process_general_rank(strong_stocks_df_raw, '强势股池')
             processed_consecutive_rise = self.processor.process_general_rank(consecutive_rise_df_raw, '连续上涨')
-            
+
             # >> 新增：处理量价齐升数据
             processed_ljqs = self.processor.process_general_rank(ljqs_df_raw, '量价齐升')
-
 
             # 使用新的获取方法
             top_industry_cons_df = self.fetcher.get_top_industry_stocks()
@@ -1010,10 +993,10 @@ class StockDataPipeline:
             macd_df = technical_results['macd_df']
             cci_df = technical_results['cci_df']
             rsi_df = technical_results['rsi_df']
-            # 移除 adx_df
+
             boll_df = technical_results['boll_df']
 
-            # --- 最终推荐和报告生成 ---
+
             recommended_stocks = self.processor.find_recommended_stocks_with_score(
                 macd_df, cci_df, processed_xstp_df, rsi_df, processed_strong_stocks,
                 filtered_spot, processed_consecutive_rise,
@@ -1022,7 +1005,7 @@ class StockDataPipeline:
                 processed_ljqs
             )
 
-            # 移除 ADX工作表
+
             sheets_data = {
                 '主力研报筛选': main_report_sheet,
                 '财务摘要数据': processed_financial_abstract,
@@ -1034,7 +1017,7 @@ class StockDataPipeline:
                 '向上突破': processed_xstp_df,
                 '强势股池': processed_strong_stocks,
                 '连续上涨': processed_consecutive_rise,
-                # >> 添加量价齐升数据到 sheets_data
+
                 '量价齐升': processed_ljqs,
                 'MACD金叉': macd_df,
                 'CCI超卖': cci_df,
