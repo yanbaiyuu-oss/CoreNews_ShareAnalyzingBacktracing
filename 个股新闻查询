@@ -3,10 +3,27 @@ import pandas as pd
 from typing import Optional
 from datetime import datetime, timedelta  # 导入日期时间模块
 
+def get_period_selection() -> int:
+    """
+    提示用户选择新闻查询的周期 (30 天或 60 天)。
+    """
+    while True:
+        print("\n请选择您要查询的新闻周期：")
+        print("  输入 1: 最近 30 天")
+        print("  输入 2: 最近 60 天")
+        choice = input("请输入您的选择 (1 或 2): ").strip()
+
+        if choice == '1':
+            return 30
+        elif choice == '2':
+            return 60
+        else:
+            print(f"输入 '{choice}' 无效。请重新输入 1 或 2。")
+
 def query_stock_news():
     """
     查询指定股票代码的最新新闻资讯，并显示关键信息。
-    仅保留最近 30 天内发布的新闻，并将结果保存到 Excel 文件。
+    根据用户选择的周期进行过滤和排序，并将结果保存到 Excel 文件。
     """
     print("--- 东方财富个股新闻查询工具 ---")
 
@@ -24,7 +41,10 @@ def query_stock_news():
         else:
             print(f"输入 '{stock_code}' 无效。股票代码通常是 6 位数字。请重新输入。")
 
-    print(f"\n正在查询股票代码 {stock_code} 的最新新闻资讯...")
+    # 第二个交互问题：选择查询周期
+    days_to_query = get_period_selection()
+    
+    print(f"\n正在查询股票代码 {stock_code} 在过去 {days_to_query} 天内的最新新闻资讯...")
 
     try:
         # 调用 akshare 接口获取个股新闻
@@ -36,12 +56,12 @@ def query_stock_news():
             return
 
         # =======================================================
-        # 逻辑：只保留近 30 天的新闻
+        # 逻辑：只保留近 N 天的新闻 & 倒序排序
         # =======================================================
         if '发布时间' in news_df.columns:
             try:
-                # 1. 计算 30 天前的日期
-                thirty_days_ago = datetime.now() - timedelta(days=30)
+                # 1. 计算 N 天前的日期
+                cutoff_date = datetime.now() - timedelta(days=days_to_query)
                 
                 # 2. 将 '发布时间' 转换为 datetime 对象
                 news_df['发布时间_dt'] = pd.to_datetime(news_df['发布时间'], errors='coerce')
@@ -49,19 +69,22 @@ def query_stock_news():
                 # 3. 过滤数据：只保留发布时间在 cutoff 日期之后的新闻，并移除 NaT
                 news_df = news_df[
                     (news_df['发布时间_dt'].notna()) & 
-                    (news_df['发布时间_dt'] >= thirty_days_ago)
+                    (news_df['发布时间_dt'] >= cutoff_date)
                 ].copy()
+
+                # 4. 倒序排序：根据发布时间的 datetime 对象进行排序 (最新的在前)
+                news_df = news_df.sort_values(by='发布时间_dt', ascending=False)
                 
-                # 4. 删除临时 datetime 列
+                # 5. 删除临时 datetime 列
                 news_df = news_df.drop(columns=['发布时间_dt'])
                 
             except Exception as e:
-                # 如果日期处理出现任何问题，打印警告并继续使用全部数据（未过滤）
-                print(f"[警告] 对 '发布时间' 进行 30 天过滤时失败，将显示所有新闻。错误详情: {e}")
+                # 如果日期处理出现任何问题，打印警告并继续使用全部数据（未排序）
+                print(f"[警告] 对 '发布时间' 进行 {days_to_query} 天过滤和排序时失败，将显示所有新闻且可能未排序。错误详情: {e}")
         
         # 检查过滤后是否还有数据
         if news_df.empty:
-            print(f"\n[提示] 股票 {stock_code} 在过去 30 天内没有新的新闻资讯。")
+            print(f"\n[提示] 股票 {stock_code} 在过去 {days_to_query} 天内没有新的新闻资讯。")
             return
         
         # =======================================================
@@ -83,8 +106,6 @@ def query_stock_news():
             except Exception:
                 pass # 保持原样如果转换失败
         
-        # ** 根据用户要求，不进行新闻内容截断 **
-        
         # =======================================================
         # 逻辑：保存到 Excel 文件
         # =======================================================
@@ -97,8 +118,8 @@ def query_stock_news():
             # index=False 避免将 DataFrame 索引写入 Excel
             display_df.to_excel(filename, index=False, sheet_name=stock_code)
             
-            # 更新提示信息
-            print(f"\n成功获取 {stock_code} 在过去 30 天内的 {len(display_df)} 条新闻。")
+            # 更新提示信息，反映用户选择的周期
+            print(f"\n成功获取 {stock_code} 在过去 {days_to_query} 天内的 {len(display_df)} 条新闻。")
             print(f"结果已保存到 Excel 文件: {filename}")
             print("您可以在 Excel 中打开此文件，查看完整的新闻内容。")
 
