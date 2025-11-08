@@ -1,10 +1,12 @@
 import akshare as ak
 import pandas as pd
 from typing import Optional
+from datetime import datetime, timedelta  # 导入日期时间模块
 
 def query_stock_news():
     """
     查询指定股票代码的最新新闻资讯，并显示关键信息。
+    仅保留最近 30 天内发布的新闻，并将结果保存到 Excel 文件。
     """
     print("--- 东方财富个股新闻查询工具 ---")
 
@@ -33,45 +35,80 @@ def query_stock_news():
             print(f"\n[提示] 未能获取到股票 {stock_code} 的新闻数据，可能是今日无相关新闻或接口查询失败。")
             return
 
+        # =======================================================
+        # 逻辑：只保留近 30 天的新闻
+        # =======================================================
+        if '发布时间' in news_df.columns:
+            try:
+                # 1. 计算 30 天前的日期
+                thirty_days_ago = datetime.now() - timedelta(days=30)
+                
+                # 2. 将 '发布时间' 转换为 datetime 对象
+                news_df['发布时间_dt'] = pd.to_datetime(news_df['发布时间'], errors='coerce')
+                
+                # 3. 过滤数据：只保留发布时间在 cutoff 日期之后的新闻，并移除 NaT
+                news_df = news_df[
+                    (news_df['发布时间_dt'].notna()) & 
+                    (news_df['发布时间_dt'] >= thirty_days_ago)
+                ].copy()
+                
+                # 4. 删除临时 datetime 列
+                news_df = news_df.drop(columns=['发布时间_dt'])
+                
+            except Exception as e:
+                # 如果日期处理出现任何问题，打印警告并继续使用全部数据（未过滤）
+                print(f"[警告] 对 '发布时间' 进行 30 天过滤时失败，将显示所有新闻。错误详情: {e}")
+        
+        # 检查过滤后是否还有数据
+        if news_df.empty:
+            print(f"\n[提示] 股票 {stock_code} 在过去 30 天内没有新的新闻资讯。")
+            return
+        
+        # =======================================================
+        # 筛选和格式化要展示的列
+        # =======================================================
+
         # 检查并标准化列名
         required_cols = ["关键词", "新闻标题", "新闻内容", "发布时间"]
         
         # 确保 DataFrame 包含所有必需的列
-        missing_cols = [col for col in required_cols if col not in news_df.columns]
-        if missing_cols:
-            print(f"\n[警告] 接口返回数据缺少必需的列: {', '.join(missing_cols)}")
-            print("原始列名:", news_df.columns.tolist())
-            # 尝试继续，仅保留存在的列
-            display_df = news_df[[col for col in required_cols if col in news_df.columns]].copy()
-        else:
-            display_df = news_df[required_cols].copy()
-
-        # 格式化发布时间 (如果需要，Akshare通常返回标准格式)
+        # 仅保留存在的且需要的列
+        display_df = news_df[[col for col in required_cols if col in news_df.columns]].copy()
+        
+        # 格式化发布时间
         if '发布时间' in display_df.columns:
             try:
-                # 尝试将时间列转换为 datetime 对象，然后格式化
+                # 尝试将时间列转换为 datetime 对象，然后格式化为统一的字符串格式
                 display_df['发布时间'] = pd.to_datetime(display_df['发布时间']).dt.strftime('%Y-%m-%d %H:%M:%S')
             except Exception:
                 pass # 保持原样如果转换失败
-
-        print(f"\n成功获取 {stock_code} 的 {len(display_df)} 条新闻 (最新 100 条):")
         
-        # 逐条打印新闻内容
-        for index, row in display_df.iterrows():
-            print("=" * 60)
-            print(f"序号: {index + 1}")
-            print(f"发布时间: {row.get('发布时间', 'N/A')}")
-            print(f"关键词: {row.get('关键词', 'N/A')}")
-            print(f"新闻标题: {row.get('新闻标题', 'N/A')}")
+        # ** 根据用户要求，不进行新闻内容截断 **
+        
+        # =======================================================
+        # 逻辑：保存到 Excel 文件
+        # =======================================================
+        
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"个股新闻_{stock_code}_{timestamp}.xlsx"
+
+        try:
+            # 使用 Pandas 的 to_excel 方法保存到 Excel
+            # index=False 避免将 DataFrame 索引写入 Excel
+            display_df.to_excel(filename, index=False, sheet_name=stock_code)
             
-            # 对新闻内容进行截断显示，防止过长
-            content = row.get('新闻内容', 'N/A')
-            if len(content) > 150:
-                content = content[:150] + "..."
-            print(f"新闻内容: {content}")
-            
-        print("=" * 60)
-        print("查询完成。")
+            # 更新提示信息
+            print(f"\n成功获取 {stock_code} 在过去 30 天内的 {len(display_df)} 条新闻。")
+            print(f"结果已保存到 Excel 文件: {filename}")
+            print("您可以在 Excel 中打开此文件，查看完整的新闻内容。")
+
+        except Exception as e:
+            print(f"\n[错误] 保存 Excel 文件失败: {e}")
+            # 文件保存失败，退回到控制台输出作为提示（但内容仍然完整，可能显示较乱）
+            print("\n[警告] 文件保存失败，以下是完整数据控制台输出（可能格式错乱，建议解决文件保存问题后重试）:")
+            print(display_df.to_string(index=False)) 
+
+        print("\n查询完成。")
 
     except Exception as e:
         print(f"\n[错误] 查询过程中发生异常，请检查股票代码是否正确或网络连接: {e}")
