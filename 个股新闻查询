@@ -24,6 +24,7 @@ def query_stock_news():
     """
     查询指定股票代码的最新新闻资讯，并显示关键信息。
     根据用户选择的周期进行过滤和排序，并将结果保存到 Excel 文件。
+    （新闻内容不截断，完整保存）
     """
     print("--- 东方财富个股新闻查询工具 ---")
 
@@ -105,6 +106,8 @@ def query_stock_news():
                 display_df['发布时间'] = pd.to_datetime(display_df['发布时间']).dt.strftime('%Y-%m-%d %H:%M:%S')
             except Exception:
                 pass # 保持原样如果转换失败
+        
+        # ** 新闻内容不截断，完整保存到 Excel **
         
         # =======================================================
         # 逻辑：保存到 Excel 文件
