@@ -175,6 +175,18 @@ class DataFetcher:
             print("  - 所有板块成分股数据均获取失败。")
             return pd.DataFrame()
 
+    # >> 新增持续放量数据的获取方法
+    def fetch_continuous_volume_increase(self) -> pd.DataFrame:
+        """
+        获取同花顺-持续放量数据。
+        接口: ak.stock_rank_cxfl_ths
+        """
+        print("\n>>> 正在获取同花顺-持续放量数据...")
+        # Note: The file base name should match the name used in processor
+        df = self.fetch_with_cache(ak.stock_rank_cxfl_ths, '持续放量')
+        return df
+    # << 新增持续放量数据的获取方法
+
     def fetch_hist_data_parallel(self, codes: list, days: int) -> pd.DataFrame:
         """并行获取指定股票代码的历史数据，并缓存到本地文件。"""
         print(f"\n正在为 {len(codes)} 只股票下载 {days} 天的历史数据，使用15个线程并行处理。")
@@ -405,6 +417,29 @@ class DataProcessor:
         """通用排行榜数据处理，添加股票代码和编码。"""
         return self.clean_data(df, name)
 
+    # >> 新增持续放量数据处理方法
+    def process_continuous_volume_increase(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        处理持续放量数据，进行清洗和格式化。
+        """
+        df = self.clean_data(df, '持续放量')
+        if df.empty:
+            return pd.DataFrame()
+        
+        # 确保 '持续放量天数' 列存在且为数字
+        if '持续放量天数' in df.columns:
+            df['持续放量天数'] = pd.to_numeric(df['持续放量天数'], errors='coerce').fillna(0).astype(int)
+        elif '放量天数' in df.columns: # 兼容可能出现的字段名
+            df.rename(columns={'放量天数': '持续放量天数'}, inplace=True)
+            df['持续放量天数'] = pd.to_numeric(df['持续放量天数'], errors='coerce').fillna(0).astype(int)
+        else:
+            print("[WARN] '持续放量天数' 或 '放量天数' 列未找到，无法进行评分筛选。")
+            df['持续放量天数'] = 0
+
+        print(f"  - 持续放量数据处理成功，共 {len(df)} 条。")
+        return df
+    # << 新增持续放量数据处理方法
+
     def process_board_data(self, df: pd.DataFrame) -> pd.DataFrame:
         """通用板块数据处理，进行清洗和标准化。"""
         # 注意：这里的 df_name 要传入 ak.stock_rank_xstp_ths 对应的 base_name
@@ -617,13 +652,16 @@ class DataProcessor:
         # 移除 'adx_df'
         return {'macd_df': macd_df, 'cci_df': cci_df, 'rsi_df': rsi_df, 'boll_df': boll_df}
 
+    # >> 修改 find_recommended_stocks_with_score 方法签名和逻辑
     def find_recommended_stocks_with_score(self, macd_df: pd.DataFrame, cci_df: pd.DataFrame, xstp_df: pd.DataFrame,
                                            rsi_df: pd.DataFrame, strong_stocks_df: pd.DataFrame,
                                            filtered_spot: pd.DataFrame,
                                            consecutive_rise_df: pd.DataFrame,
                                            boll_df: pd.DataFrame,
-                                           # >> 新增量价齐升参数
-                                           ljqs_df: pd.DataFrame) -> pd.DataFrame:
+                                           # >> 原有量价齐升参数
+                                           ljqs_df: pd.DataFrame,
+                                           # >> 新增持续放量参数
+                                           cxfl_df: pd.DataFrame) -> pd.DataFrame:
         """基于多因子评分筛选推荐股票。"""
         print("\n正在基于多因子评分筛选推荐股票...")
 
@@ -636,8 +674,18 @@ class DataProcessor:
         else:
             ljqs_df_scored = pd.DataFrame()
 
-        # 1. 将所有可得分的 DF 加入到待合并列表 (使用 ljqs_df_scored 计入分数)
-        input_dfs_to_score = [macd_df, cci_df, xstp_df, rsi_df, boll_df, ljqs_df_scored]
+        # 0. 预处理 cxfl_df 并筛选出符合条件的股票 (持续放量天数 > 1) # << ADDED
+        if not cxfl_df.empty and '持续放量天数' in cxfl_df.columns:
+            # 确保 '持续放量天数' 是数字类型
+            cxfl_df['持续放量天数'] = pd.to_numeric(cxfl_df['持续放量天数'], errors='coerce').fillna(0).astype(int)
+            # 筛选出可以计入分数的股票 (天数 > 1)
+            cxfl_df_scored = cxfl_df[cxfl_df['持续放量天数'] > 1].copy()
+        else:
+            cxfl_df_scored = pd.DataFrame()
+
+
+        # 1. 将所有可得分的 DF 加入到待合并列表 (使用 ljqs_df_scored 和 cxfl_df_scored 计入分数) # << MODIFIED
+        input_dfs_to_score = [macd_df, cci_df, xstp_df, rsi_df, boll_df, ljqs_df_scored, cxfl_df_scored]
 
         df_to_concat = []
         for df in input_dfs_to_score:
@@ -650,6 +698,7 @@ class DataProcessor:
             return pd.DataFrame(columns=['股票代码', '股票简称', '符合条件数量', 'MACD买卖信号',
                                          'CCI买卖信号', 'RSI买卖信号', '均线多头排列',
                                          'BOLL波动性信号', '量价齐升信号', '量价齐升天数',
+                                         '持续放量信号', '持续放量天数', # << ADDED
                                          '强势股池', '连涨天数', '当前价格', '股票链接'])
 
         all_codes = pd.concat(df_to_concat, ignore_index=True).drop_duplicates()
@@ -670,6 +719,8 @@ class DataProcessor:
         final_df['BOLL波动性信号'] = '未满足'
         # >> 新增量价齐升信号列
         final_df['量价齐升信号'] = '未满足'
+        # >> 新增持续放量信号列 # << ADDED
+        final_df['持续放量信号'] = '未满足'
 
         def update_df(source_df: pd.DataFrame, column_name: str, check_col: str = None):
             if '股票代码' not in source_df.columns:
@@ -686,6 +737,8 @@ class DataProcessor:
                         final_df.loc[final_df['股票代码'] == code, column_name] = signal_val
                     elif column_name == '量价齐升信号':
                         final_df.loc[final_df['股票代码'] == code, column_name] = '已满足(天数>1)'
+                    elif column_name == '持续放量信号': # << ADDED
+                        final_df.loc[final_df['股票代码'] == code, column_name] = '已满足(天数>1)'
                     else:
                         final_df.loc[final_df['股票代码'] == code, column_name] = '已满足'
 
@@ -696,6 +749,8 @@ class DataProcessor:
         update_df(boll_df, 'BOLL波动性信号', 'BOLL买卖信号')
         # >> 调用更新量价齐升信号 (使用 ljqs_df_scored)
         update_df(ljqs_df_scored, '量价齐升信号')
+        # >> 调用更新持续放量信号 (使用 cxfl_df_scored) # << ADDED
+        update_df(cxfl_df_scored, '持续放量信号')
 
         # 强势股池
         strong_stocks_codes = set(strong_stocks_df[
@@ -728,6 +783,22 @@ class DataProcessor:
         else:
             final_df['量价齐升天数'] = 0
 
+        # >> 新增：合并持续放量天数 (使用 cxfl_df 原始数据) # << ADDED
+        if not cxfl_df.empty and '持续放量天数' in cxfl_df.columns and '股票代码' in cxfl_df.columns:
+            cxfl_df_temp = cxfl_df[['股票代码', '持续放量天数']].copy()
+            # 确保填充了 0
+            cxfl_df_temp['持续放量天数'] = pd.to_numeric(cxfl_df_temp['持续放量天数'], errors='coerce').fillna(
+                0).astype(int)
+            final_df = pd.merge(final_df, cxfl_df_temp, on='股票代码', how='left', suffixes=('', '_cxfl'))
+            # 确保最终列名正确，并填充 0
+            if '持续放量天数_cxfl' in final_df.columns:
+                final_df['持续放量天数'] = final_df['持续放量天数_cxfl'].fillna(0).astype(int)
+                final_df.drop(columns=['持续放量天数_cxfl'], inplace=True)
+            elif '持续放量天数' not in final_df.columns:
+                final_df['持续放量天数'] = 0
+        else:
+            final_df['持续放量天数'] = 0
+        
         # 合并最新价，使用filtered_spot中的 '当前价格' 列
         if '当前价格' in filtered_spot.columns:
             final_df = pd.merge(final_df, filtered_spot[['股票代码', '当前价格']], on='股票代码', how='left')
@@ -755,6 +826,8 @@ class DataProcessor:
                             'BOLL波动性信号',
                             '量价齐升信号',
                             '量价齐升天数',
+                            '持续放量信号',  # << ADDED
+                            '持续放量天数',  # << ADDED
                             '强势股池', '连涨天数', '当前价格', '股票链接']
 
         # 仅保留在 DataFrame 中存在的列
@@ -763,6 +836,7 @@ class DataProcessor:
 
         print(f"成功筛选出 {len(recommended_df)} 只最终推荐股票，并按符合条件数量排序。")
         return recommended_df
+    # << 修改 find_recommended_stocks_with_score 方法签名和逻辑
 
 
 # ==============================================================================
@@ -854,6 +928,7 @@ class ExcelReporter:
         except Exception as e:
             print(f"[ERROR] 写入工作表 {safe_sheet_name} 时出错: {e}")
 
+    # >> 修改 generate_report 方法
     def generate_report(self, sheets_data: Dict[str, pd.DataFrame]):
         """生成最终的Excel报告。"""
         if self.writer is None or self.workbook is None:
@@ -869,7 +944,9 @@ class ExcelReporter:
                 {'column': 'RSI买卖信号', 'check': lambda x: '金叉' in str(x), 'format': self.red_format},
                 {'column': 'BOLL波动性信号', 'check': lambda x: '低波动买入' in str(x), 'format': self.yellow_format},
                 # >> 新增量价齐升条件格式
-                {'column': '量价齐升信号', 'check': lambda x: '已满足' in str(x), 'format': self.yellow_format}
+                {'column': '量价齐升信号', 'check': lambda x: '已满足' in str(x), 'format': self.yellow_format},
+                # >> 新增持续放量条件格式 # << ADDED
+                {'column': '持续放量信号', 'check': lambda x: '已满足' in str(x), 'format': self.yellow_format}
             ]},
             # '主力研报筛选' 不再包含链接和价格
             '主力研报筛选': {'df': sheets_data.get('主力研报筛选'), 'link_col': None, 'conditional_format': None},
@@ -884,6 +961,8 @@ class ExcelReporter:
             '连续上涨': {'df': sheets_data.get('连续上涨'), 'link_col': None, 'conditional_format': None},
             # >> 新增量价齐升工作表
             '量价齐升': {'df': sheets_data.get('量价齐升'), 'link_col': None, 'conditional_format': None},
+            # >> 新增持续放量工作表 # << ADDED
+            '持续放量': {'df': sheets_data.get('持续放量'), 'link_col': None, 'conditional_format': None},
             'MACD金叉': {'df': sheets_data.get('MACD金叉'), 'link_col': None, 'conditional_format': [
                 {'column': 'MACD买卖信号', 'check': lambda x: '金叉' in str(x), 'format': self.red_format}]},
             'CCI超卖': {'df': sheets_data.get('CCI超卖'), 'link_col': None, 'conditional_format': [
@@ -903,6 +982,7 @@ class ExcelReporter:
             raise
         finally:
             self.cleanup()
+    # << 修改 generate_report 方法
 
     def cleanup(self):
         """关闭Excel写入器。"""
@@ -927,6 +1007,7 @@ class StockDataPipeline:
         self.processor = DataProcessor(self.fetcher)
         self.reporter = ExcelReporter(self.config)
 
+    # >> 修改 run 方法
     def run(self):
 
         start_time = time.time()
@@ -952,6 +1033,8 @@ class StockDataPipeline:
             df_ma60 = self.fetcher.fetch_with_cache(ak.stock_rank_xstp_ths, '向上突破60日均线', symbol="60日均线")
             df_ma90 = self.fetcher.fetch_with_cache(ak.stock_rank_xstp_ths, '向上突破90日均线', symbol="90日均线")
             ljqs_df_raw = self.fetcher.fetch_with_cache(ak.stock_rank_ljqs_ths, '量价齐升')
+            # >> 新增持续放量数据的获取 # << ADDED
+            cxfl_df_raw = self.fetcher.fetch_continuous_volume_increase()
 
             print("\n>>> 正在进行数据处理和筛选...")
 
@@ -972,6 +1055,9 @@ class StockDataPipeline:
 
             # >> 新增：处理量价齐升数据
             processed_ljqs = self.processor.process_general_rank(ljqs_df_raw, '量价齐升')
+            # >> 新增：处理持续放量数据 # << ADDED
+            processed_cxfl = self.processor.process_continuous_volume_increase(cxfl_df_raw)
+
 
             # 使用新的获取方法
             top_industry_cons_df = self.fetcher.get_top_industry_stocks()
@@ -1010,7 +1096,9 @@ class StockDataPipeline:
                 filtered_spot, processed_consecutive_rise,
                 boll_df,
                 # >> 传入量价齐升数据
-                processed_ljqs
+                processed_ljqs,
+                # >> 传入持续放量数据 # << ADDED
+                processed_cxfl
             )
 
 
@@ -1027,6 +1115,8 @@ class StockDataPipeline:
                 '连续上涨': processed_consecutive_rise,
 
                 '量价齐升': processed_ljqs,
+                # >> 新增持续放量工作表数据 # << ADDED
+                '持续放量': processed_cxfl,
                 'MACD金叉': macd_df,
                 'CCI超卖': cci_df,
                 'RSI金叉': rsi_df,
