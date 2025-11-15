@@ -440,48 +440,6 @@ class DataProcessor:
         return df
     # << 新增持续放量数据处理方法
 
-    # ==============================================================================
-    # 新增：个股新闻数据处理方法 (ADDITION)
-    # ==============================================================================
-    def process_stock_news(self, raw_news_df: pd.DataFrame) -> pd.DataFrame:
-        """
-        处理个股新闻数据：过滤近30天内容，并提取所需字段。
-        """
-        if raw_news_df.empty:
-            print("[WARN] 原始新闻数据为空。")
-            return pd.DataFrame()
-        
-        # 1. 列名标准化和选取 (原始列名: '发布时间', '新闻标题', '新闻内容', '关键字', '股票代码', '股票简称')
-        # 股票代码和简称在 NewsFetcher 中已添加
-        required_cols = ['股票代码', '股票简称', '关键字', '新闻标题', '新闻内容', '发布时间']
-        
-        # 确保 required_cols 中的字段存在
-        processed_df = raw_news_df[[col for col in required_cols if col in raw_news_df.columns]].copy()
-
-        # 2. 过滤近30天内容
-        today = datetime.now()
-        thirty_days_ago = today - timedelta(days=30)
-
-        # 转换为 datetime 对象，errors='coerce' 可将非日期值转为 NaT
-        processed_df['发布时间'] = pd.to_datetime(processed_df['发布时间'], errors='coerce')
-        
-        # 过滤
-        filtered_df = processed_df[processed_df['发布时间'] >= thirty_days_ago].copy()
-        
-        # 格式化日期以便在 Excel 中显示 (YYYY-MM-DD HH:MM:SS)
-        filtered_df['发布时间'] = filtered_df['发布时间'].dt.strftime('%Y-%m-%d %H:%M:%S')
-
-        # 3. 确保最终列顺序和要求一致
-        final_cols_order = ['股票代码', '股票简称', '关键字', '新闻标题', '新闻内容', '发布时间']
-        
-        final_df = filtered_df[[col for col in final_cols_order if col in filtered_df.columns]].copy()
-        
-        print(f"新闻处理完成。原始新闻数量: {len(raw_news_df)} 条，近30天新闻数量: {len(final_df)} 条。")
-        return final_df
-    # ==============================================================================
-    # 结束：个股新闻数据处理方法 (END ADDITION)
-    # ==============================================================================
-
     def process_board_data(self, df: pd.DataFrame) -> pd.DataFrame:
         """通用板块数据处理，进行清洗和标准化。"""
         # 注意：这里的 df_name 要传入 ak.stock_rank_xstp_ths 对应的 base_name
@@ -736,11 +694,11 @@ class DataProcessor:
 
         if not df_to_concat:
             print("[WARN] 未找到任何符合任一条件的股票。")
-            # >> 更新返回列以包含所有新字段
-            return pd.DataFrame(columns=['股票代码', '股票简称', '符合条件数量', 'MACD买卖信号',
+            # >> 更新返回列以移除 '符合条件数量'
+            return pd.DataFrame(columns=['股票代码', '股票简称', 'MACD买卖信号',
                                          'CCI买卖信号', 'RSI买卖信号', '均线多头排列',
                                          'BOLL波动性信号', '量价齐升信号', '量价齐升天数',
-                                         '持续放量信号', '持续放量天数', # << ADDED
+                                         '持续放量信号', '持续放量天数',
                                          '强势股池', '连涨天数', '当前价格', '股票链接'])
 
         all_codes = pd.concat(df_to_concat, ignore_index=True).drop_duplicates()
@@ -752,8 +710,7 @@ class DataProcessor:
         all_codes = all_codes[~all_codes['股票简称'].str.contains('ST|st|退市', case=False, na=False)].copy()
         final_df = all_codes.copy()
 
-        # 初始化评分列和信号列
-        final_df['符合条件数量'] = 0
+        # 初始化评分列和信号列 (移除 '符合条件数量')
         final_df['MACD买卖信号'] = '未满足'
         final_df['CCI买卖信号'] = '未满足'
         final_df['RSI买卖信号'] = '未满足'
@@ -764,14 +721,16 @@ class DataProcessor:
         # >> 新增持续放量信号列 # << ADDED
         final_df['持续放量信号'] = '未满足'
 
+        # 定义所有信号列，用于后续的检查和筛选
+        signal_cols = ['MACD买卖信号', 'CCI买卖信号', 'RSI买卖信号', '均线多头排列', 'BOLL波动性信号', '量价齐升信号', '持续放量信号']
+
         def update_df(source_df: pd.DataFrame, column_name: str, check_col: str = None):
             if '股票代码' not in source_df.columns:
                 return
 
             for code in source_df['股票代码'].unique():
                 if code in final_df['股票代码'].values:
-                    # 递增计数
-                    final_df.loc[final_df['股票代码'] == code, '符合条件数量'] += 1
+                    # 递增计数 (已移除)
 
                     # 更新信号列
                     if check_col:
@@ -857,106 +816,38 @@ class DataProcessor:
 
         final_df.drop(columns=['完整股票编码'], inplace=True)
 
-        recommended_df = final_df[final_df['符合条件数量'] >= 1].sort_values(by='符合条件数量',
-                                                                             ascending=False).reset_index(
-            drop=True)
+        # >>> 修改筛选和排序逻辑，不再使用 '符合条件数量'
+        # 筛选出至少有一个信号不为 '未满足' 的股票
+        
+        # 确保信号列在 DataFrame 中存在
+        current_signal_cols = [col for col in signal_cols if col in final_df.columns]
+
+        if current_signal_cols:
+            is_recommended = final_df[current_signal_cols].apply(lambda row: (row != '未满足').any(), axis=1)
+            recommended_df = final_df[is_recommended].reset_index(drop=True)
+        else:
+            recommended_df = pd.DataFrame() # 没有信号列则返回空 DataFrame
+        # <<< 修改筛选和排序逻辑，不再使用 '符合条件数量'
+
         recommended_df.fillna('N/A', inplace=True)
 
-        # 确保列顺序
-        final_cols_order = ['股票代码', '股票简称', '符合条件数量', 'MACD买卖信号',
+        # 确保列顺序 (移除 '符合条件数量')
+        final_cols_order = ['股票代码', '股票简称', 'MACD买卖信号',
                             'CCI买卖信号', 'RSI买卖信号', '均线多头排列',
                             'BOLL波动性信号',
                             '量价齐升信号',
                             '量价齐升天数',
-                            '持续放量信号',  # << ADDED
-                            '持续放量天数',  # << ADDED
+                            '持续放量信号',
+                            '持续放量天数',
                             '强势股池', '连涨天数', '当前价格', '股票链接']
 
         # 仅保留在 DataFrame 中存在的列
         final_cols_order = [col for col in final_cols_order if col in recommended_df.columns]
         recommended_df = recommended_df[final_cols_order]
 
-        print(f"成功筛选出 {len(recommended_df)} 只最终推荐股票，并按符合条件数量排序。")
+        print(f"成功筛选出 {len(recommended_df)} 只最终推荐股票。")
         return recommended_df
     # << 修改 find_recommended_stocks_with_score 方法签名和逻辑
-
-
-# ==============================================================================
-# 新闻获取类 (ADDITION)
-# ==============================================================================
-class NewsFetcher:
-    """
-    负责获取个股新闻。
-    """
-    def __init__(self, config: Config):
-        self.config = config
-        self.executor = ThreadPoolExecutor(max_workers=self.config.MAX_WORKERS)
-        
-    def get_stock_news(self, code: str) -> pd.DataFrame:
-        """
-        获取单个股票代码的新闻。
-        :param code: 股票代码（纯数字，不带前缀）
-        :return: 包含新闻信息的 DataFrame
-        """
-        for i in range(self.config.DATA_FETCH_RETRIES):
-            try:
-                # 接口: ak.stock_news_em(symbol="600000")
-                # 传入纯数字代码
-                news_df = ak.stock_news_em(symbol=code) 
-                if not news_df.empty:
-                    # 添加股票代码，用于后续合并
-                    news_df['股票代码'] = code
-                    return news_df
-                else:
-                    time.sleep(self.config.DATA_FETCH_DELAY)
-            except Exception as e:
-                # print(f"[ERROR] 错误：获取 {code} 的新闻时出错: {e}，将在 {self.config.DATA_FETCH_DELAY} 秒后重试。")
-                time.sleep(self.config.DATA_FETCH_DELAY)
-        return pd.DataFrame()
-
-    def fetch_all_recommended_stocks_news(self, recommended_stocks_df: pd.DataFrame) -> pd.DataFrame:
-        """
-        并行获取所有推荐股票的新闻数据。
-        """
-        if recommended_stocks_df.empty:
-            print("[WARN] 推荐股票列表为空，跳过新闻获取。")
-            return pd.DataFrame()
-
-        print(f"\n>>> 正在为 {len(recommended_stocks_df)} 只目标股票并行获取个股新闻...")
-        
-        all_news = []
-        future_to_code = {}
-        # 提取纯数字代码
-        codes = recommended_stocks_df['股票代码'].tolist()
-        
-        # 预先构建股票代码到简称的映射
-        code_to_name = recommended_stocks_df.set_index('股票代码')['股票简称'].to_dict()
-        
-        with ThreadPoolExecutor(max_workers=self.config.MAX_WORKERS) as executor:
-            for code in codes:
-                future = executor.submit(self.get_stock_news, code)
-                future_to_code[future] = code
-
-            for i, future in enumerate(as_completed(future_to_code)):
-                code = future_to_code[future]
-                try:
-                    news_df = future.result()
-                    if not news_df.empty:
-                        # 补充股票简称
-                        news_df['股票简称'] = code_to_name.get(code, 'N/A')
-                        all_news.append(news_df)
-                except Exception as e:
-                    print(f"[ERROR] 错误：处理 {code} 的新闻结果时出错: {e}")
-
-        if all_news:
-            merged_news_df = pd.concat(all_news, ignore_index=True)
-            return merged_news_df
-        else:
-            print("  - 未能获取任何股票的新闻数据。")
-            return pd.DataFrame()
-# ==============================================================================
-# 结束：新闻获取类 (END ADDITION)
-# ==============================================================================
 
 
 # ==============================================================================
@@ -1091,9 +982,6 @@ class ExcelReporter:
                 {'column': 'RSI买卖信号', 'check': lambda x: '金叉' in str(x), 'format': self.red_format}]},
             'BOLL低波': {'df': sheets_data.get('BOLL低波'), 'link_col': None, 'conditional_format': [
                 {'column': 'BOLL买卖信号', 'check': lambda x: '买入' in str(x), 'format': self.yellow_format}]},
-            # === ADDITION: 新增新闻工作表规范 ===
-            '指标个股新闻': {'df': sheets_data.get('指标个股新闻'), 'link_col': None, 'conditional_format': None}, 
-            # ==========================
         }
         try:
             for sheet_name, spec in sheet_specs.items():
@@ -1128,11 +1016,9 @@ class StockDataPipeline:
         self.config = config if config else Config()
         self.fetcher = DataFetcher(self.config)
         self.processor = DataProcessor(self.fetcher)
-        # ADDITION: 初始化 NewsFetcher
-        self.news_fetcher = NewsFetcher(self.config) 
         self.reporter = ExcelReporter(self.config)
 
-    # >> 修改 run 方法以实现新闻筛选逻辑
+    # >> 修改 run 方法
     def run(self):
 
         start_time = time.time()
@@ -1212,40 +1098,20 @@ class StockDataPipeline:
             macd_df = technical_results['macd_df']
             cci_df = technical_results['cci_df']
             rsi_df = technical_results['rsi_df']
+
             boll_df = technical_results['boll_df']
 
 
-            # --- 1. 生成最终的 '指标汇总' (Recommended Stocks) ---
             recommended_stocks = self.processor.find_recommended_stocks_with_score(
                 macd_df, cci_df, processed_xstp_df, rsi_df, processed_strong_stocks,
                 filtered_spot, processed_consecutive_rise,
                 boll_df,
+                # >> 传入量价齐升数据
                 processed_ljqs,
+                # >> 传入持续放量数据 # << ADDED
                 processed_cxfl
             )
-            
-            # === 2. MODIFICATION: 筛选新闻的目标股票 (MACD金叉 或 RSI金叉) ===
-            news_target_stocks = pd.DataFrame()
-            
-            # MACD金叉
-            if not macd_df.empty:
-                # 仅选择代码和简称，因为 macd_df 已经是金叉筛选后的结果
-                news_target_stocks = pd.concat([news_target_stocks, macd_df[['股票代码', '股票简称']]], ignore_index=True)
-            
-            # RSI金叉
-            if not rsi_df.empty:
-                # 仅选择代码和简称
-                news_target_stocks = pd.concat([news_target_stocks, rsi_df[['股票代码', '股票简称']]], ignore_index=True)
 
-            # 去重以获取唯一的股票列表
-            news_target_stocks = news_target_stocks.drop_duplicates(subset=['股票代码']).copy()
-            
-            print(f"\n>>> 找到 {len(news_target_stocks)} 只 '金叉(买入信号)' 股票作为新闻收集目标。")
-            
-            # === 3. 获取和处理个股新闻 (使用筛选后的目标列表) ===
-            raw_stock_news = self.news_fetcher.fetch_all_recommended_stocks_news(news_target_stocks)
-            processed_stock_news = self.processor.process_stock_news(raw_stock_news)
-            # =======================================================
 
             sheets_data = {
                 '主力研报筛选': main_report_sheet,
@@ -1258,16 +1124,15 @@ class StockDataPipeline:
                 '向上突破': processed_xstp_df,
                 '强势股池': processed_strong_stocks,
                 '连续上涨': processed_consecutive_rise,
+
                 '量价齐升': processed_ljqs,
+                # >> 新增持续放量工作表数据 # << ADDED
                 '持续放量': processed_cxfl,
                 'MACD金叉': macd_df,
                 'CCI超卖': cci_df,
                 'RSI金叉': rsi_df,
                 'BOLL低波': boll_df,
                 '指标汇总': recommended_stocks,
-                # === 新闻工作表数据 ===
-                '指标个股新闻': processed_stock_news, 
-                # ======================
             }
             self.reporter.generate_report(sheets_data)
         except Exception as e:
