@@ -378,18 +378,18 @@ class DataProcessor:
         spot_data_all = self.clean_data(spot_data_all, "A股实时行情")
 
         if spot_data_all.empty or filtered_codes_df.empty:
-            return pd.DataFrame()
-
-        # 核心修复：确保价格列名为'当前价格'
+            # 如果是空DF，则只返回 spot_data_all 的清洗结果
+            return spot_data_all
+        
+        # 核心修复：确保价格列名为'当前价格'，以便在 find_recommended_stocks_with_score 中区分使用
         if '最新价' in spot_data_all.columns:
             spot_data_all.rename(columns={'最新价': '当前价格'}, inplace=True)
         elif '现价' in spot_data_all.columns:
             spot_data_all.rename(columns={'现价': '当前价格'}, inplace=True)
 
         # 确保合并后保留'股票代码'和'当前价格'
-        filtered_spot_data = pd.merge(spot_data_all, filtered_codes_df[['股票代码', '完整股票编码']], on='股票代码',
-                                      how='inner')
-        return filtered_spot_data
+        # 注意：这里不需要 filtered_codes_df，因为 spot_data_all 是 A股全量的实时行情，直接返回即可
+        return spot_data_all[['股票代码', '股票简称', '当前价格']].drop_duplicates(subset=['股票代码'])
         # -----------------------------------------------
 
     def process_financial_abstract(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -400,6 +400,7 @@ class DataProcessor:
         """
         处理市场资金流向数据 (5日排行)。
         """
+        # 注意：clean_data 会将价格列（如'最新价'）标准化为 '最新价'
         df = self.clean_data(df, "市场资金流向")
         if df.empty:
             print("警告：未能获取市场资金流向数据。")
@@ -661,7 +662,10 @@ class DataProcessor:
                                            # >> 原有量价齐升参数
                                            ljqs_df: pd.DataFrame,
                                            # >> 新增持续放量参数
-                                           cxfl_df: pd.DataFrame) -> pd.DataFrame:
+                                           cxfl_df: pd.DataFrame,
+                                           # >> ADDED: 新增市场资金流向参数
+                                           market_fund_flow_df: pd.DataFrame
+                                           ) -> pd.DataFrame:
         """基于多因子评分筛选推荐股票。"""
         print("\n正在基于多因子评分筛选推荐股票...")
 
@@ -674,7 +678,7 @@ class DataProcessor:
         else:
             ljqs_df_scored = pd.DataFrame()
 
-        # 0. 预处理 cxfl_df 并筛选出符合条件的股票 (持续放量天数 > 1) 
+        # 0. 预处理 cxfl_df 并筛选出符合条件的股票 (持续放量天数 > 1)
         if not cxfl_df.empty and '持续放量天数' in cxfl_df.columns:
             # 确保 '持续放量天数' 是数字类型
             cxfl_df['持续放量天数'] = pd.to_numeric(cxfl_df['持续放量天数'], errors='coerce').fillna(0).astype(int)
@@ -695,8 +699,8 @@ class DataProcessor:
 
         if not df_to_concat:
             print("[WARN] 未找到任何符合任一条件的股票。")
-            # >> 更新返回列以移除 '当前价格' 和 '量价齐升信号'
-            return pd.DataFrame(columns=['股票代码', '股票简称', 'MACD买卖信号',
+            # >> 更新返回列以添加 '最新价'
+            return pd.DataFrame(columns=['股票代码', '股票简称', '最新价', 'MACD买卖信号',
                                          'CCI买卖信号', 'RSI买卖信号', '均线多头排列',
                                          'BOLL波动性信号', '量价齐升天数',
                                          '持续放量信号', '持续放量天数',
@@ -777,7 +781,7 @@ class DataProcessor:
         else:
             final_df['量价齐升天数'] = 0
 
-        # >> 合并持续放量天数 (使用 cxfl_df 原始数据) 
+        # >> 合并持续放量天数 (使用 cxfl_df 原始数据)
         if not cxfl_df.empty and '持续放量天数' in cxfl_df.columns and '股票代码' in cxfl_df.columns:
             cxfl_df_temp = cxfl_df[['股票代码', '持续放量天数']].copy()
             # 确保填充了 0
@@ -793,13 +797,34 @@ class DataProcessor:
         else:
             final_df['持续放量天数'] = 0
         
-        # --- REMOVED: 移除合并最新价的逻辑 ---
-        # if '当前价格' in filtered_spot.columns:
-        #     final_df = pd.merge(final_df, filtered_spot[['股票代码', '当前价格']], on='股票代码', how='left')
-        # else:
-        #     final_df['当前价格'] = 'N/A'
-
-        # final_df['当前价格'] = final_df['当前价格'].fillna('N/A')
+        # --- MODIFIED: 重新添加合并最新价的逻辑，使用实时行情作为主要来源，市场资金流向作为备用 ---
+        
+        # 1. Primary source: filtered_spot (A股实时行情), column is '当前价格'
+        primary_price_df = pd.DataFrame()
+        if '当前价格' in filtered_spot.columns:
+            primary_price_df = filtered_spot[['股票代码', '当前价格']].copy()
+            primary_price_df.rename(columns={'当前价格': '最新价'}, inplace=True)
+        
+        # 2. Secondary source: market_fund_flow_df (市场资金流向), column is '最新价'
+        secondary_price_df = pd.DataFrame()
+        if '最新价' in market_fund_flow_df.columns:
+            secondary_price_df = market_fund_flow_df[['股票代码', '最新价']].copy()
+        
+        # 3. Merge primary price
+        final_df = pd.merge(final_df, primary_price_df, on='股票代码', how='left')
+        
+        # 4. Fill missing values with secondary price
+        if not secondary_price_df.empty:
+            # Merge secondary price as a temporary column
+            final_df = pd.merge(final_df, secondary_price_df, on='股票代码', how='left', suffixes=('', '_secondary'))
+            
+            # Fill NaNs in the primary '最新价' column using the secondary column
+            final_df['最新价'] = final_df['最新价'].fillna(final_df['最新价_secondary'])
+            
+            # Drop the temporary column
+            final_df.drop(columns=[c for c in ['最新价_secondary'] if c in final_df.columns], inplace=True)
+            
+        final_df['最新价'] = final_df['最新价'].fillna('N/A')
         # ------------------------------------
 
         # 增加完整股票编码列用于链接生成
@@ -835,14 +860,14 @@ class DataProcessor:
 
         recommended_df.fillna('N/A', inplace=True)
 
-        # 确保列顺序 (不包含 '当前价格' 和 '量价齐升信号')
-        final_cols_order = ['股票代码', '股票简称', 'MACD买卖信号',
+        # 确保列顺序 (添加 '最新价')
+        final_cols_order = ['股票代码', '股票简称', '最新价', 'MACD买卖信号',  # <-- ADDED '最新价'
                             'CCI买卖信号', 'RSI买卖信号', '均线多头排列',
                             'BOLL波动性信号',
                             '量价齐升天数',
                             '持续放量信号',
                             '持续放量天数',
-                            '强势股池', '连涨天数', '股票链接'] # <-- '当前价格' 已移除
+                            '强势股池', '连涨天数', '股票链接'] 
 
         # 仅保留在 DataFrame 中存在的列
         final_cols_order = [col for col in final_cols_order if col in recommended_df.columns]
@@ -1052,16 +1077,16 @@ class StockDataPipeline:
 
             # --- 清洗和预处理 ---
             processed_profit_data = self.processor.process_profit_data(profit_data_raw)
-            # spot_data_all 将在 process_spot_data 中被清洗
-            processed_spot_data_cleaned = self.processor.clean_data(spot_data_all, "A股实时行情")
+            # spot_data_all 将在 process_spot_data 中被清洗，并返回所需的列
+            filtered_spot = self.processor.process_spot_data(spot_data_all, processed_profit_data)
 
             # 调用修改后的 process_main_report_sheet
             main_report_sheet = self.processor.process_main_report_sheet(processed_profit_data,
-                                                                         processed_spot_data_cleaned)
-            # process_spot_data 内部不再获取备用接口数据
-            filtered_spot = self.processor.process_spot_data(spot_data_all, processed_profit_data)
-            processed_financial_abstract = self.processor.process_financial_abstract(financial_abstract_df)
+                                                                         filtered_spot)
+            
+            # process_market_fund_flow 会将价格列标准化为 '最新价'
             processed_market_fund_flow = self.processor.process_market_fund_flow(market_fund_flow_raw)
+            processed_financial_abstract = self.processor.process_financial_abstract(financial_abstract_df)
             processed_strong_stocks = self.processor.process_general_rank(strong_stocks_df_raw, '强势股池')
             processed_consecutive_rise = self.processor.process_general_rank(consecutive_rise_df_raw, '连续上涨')
 
@@ -1074,7 +1099,7 @@ class StockDataPipeline:
             # 使用新的获取方法
             top_industry_cons_df = self.fetcher.get_top_industry_stocks()
             processed_xstp_df = self.processor.process_and_merge_xstp_data(df_ma20, df_ma60, df_ma90,
-                                                                           processed_spot_data_cleaned)
+                                                                           spot_data_all)
 
             # --- 技术指标计算 ---
             # 合并所有需要进行技术分析的股票代码，只获取一次历史数据
@@ -1099,7 +1124,6 @@ class StockDataPipeline:
             macd_df = technical_results['macd_df']
             cci_df = technical_results['cci_df']
             rsi_df = technical_results['rsi_df']
-
             boll_df = technical_results['boll_df']
 
 
@@ -1110,7 +1134,9 @@ class StockDataPipeline:
                 # >> 传入量价齐升数据
                 processed_ljqs,
                 # >> 传入持续放量数据 
-                processed_cxfl
+                processed_cxfl,
+                # >> ADDED: 传入市场资金流向数据作为备用价格源
+                processed_market_fund_flow
             )
 
 
