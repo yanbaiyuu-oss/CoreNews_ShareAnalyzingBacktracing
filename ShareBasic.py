@@ -185,6 +185,7 @@ class DataFetcher:
         # Note: The file base name should match the name used in processor
         df = self.fetch_with_cache(ak.stock_rank_cxfl_ths, '持续放量')
         return df
+
     # << 新增持续放量数据的获取方法
 
     def fetch_hist_data_parallel(self, codes: list, days: int) -> pd.DataFrame:
@@ -352,13 +353,13 @@ class DataProcessor:
         if profit_df.empty:
             print("[WARN] 研报数据为空，无法生成主力研报筛选表。")
             return pd.DataFrame()
-        
+
         # 1. 使用 profit_df 的拷贝作为基础，不再合并 spot_df 中的 '最新价'
-        final_df = profit_df.copy() 
-        
+        final_df = profit_df.copy()
+
         # 2. 移除不再需要的列：'完整股票编码'（曾用于生成股票链接）
-        cols_to_drop = ['完整股票编码'] 
-        
+        cols_to_drop = ['完整股票编码']
+
         for col in cols_to_drop:
             if col in final_df.columns:
                 final_df.drop(columns=[col], inplace=True)
@@ -367,7 +368,7 @@ class DataProcessor:
         leading_cols = ['股票代码', '股票简称']
         existing_leading_cols = [col for col in leading_cols if col in final_df.columns]
         other_cols = [col for col in final_df.columns if col not in existing_leading_cols]
-        
+
         # 返回最终筛选后的 DataFrame
         return final_df[existing_leading_cols + other_cols]
 
@@ -380,7 +381,7 @@ class DataProcessor:
         if spot_data_all.empty or filtered_codes_df.empty:
             # 如果是空DF，则只返回 spot_data_all 的清洗结果
             return spot_data_all
-        
+
         # 核心修复：确保价格列名为'当前价格'，以便在 find_recommended_stocks_with_score 中区分使用
         if '最新价' in spot_data_all.columns:
             spot_data_all.rename(columns={'最新价': '当前价格'}, inplace=True)
@@ -426,11 +427,11 @@ class DataProcessor:
         df = self.clean_data(df, '持续放量')
         if df.empty:
             return pd.DataFrame()
-        
+
         # 确保 '持续放量天数' 列存在且为数字
         if '持续放量天数' in df.columns:
             df['持续放量天数'] = pd.to_numeric(df['持续放量天数'], errors='coerce').fillna(0).astype(int)
-        elif '放量天数' in df.columns: # 兼容可能出现的字段名
+        elif '放量天数' in df.columns:  # 兼容可能出现的字段名
             df.rename(columns={'放量天数': '持续放量天数'}, inplace=True)
             df['持续放量天数'] = pd.to_numeric(df['持续放量天数'], errors='coerce').fillna(0).astype(int)
         else:
@@ -439,6 +440,7 @@ class DataProcessor:
 
         print(f"  - 持续放量数据处理成功，共 {len(df)} 条。")
         return df
+
     # << 新增持续放量数据处理方法
 
     def process_board_data(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -646,19 +648,19 @@ class DataProcessor:
                 if len(group_df) >= 2 and 'STOCHk_14_3_3' in group_df.columns and 'STOCHd_14_3_3' in group_df.columns:
                     last_day_kdj = group_df.iloc[-1]
                     prev_day_kdj = group_df.iloc[-2]
-                    
+
                     k_col = 'STOCHk_14_3_3'
                     d_col = 'STOCHd_14_3_3'
-                    
+
                     # 1. 判断是否为金叉
                     is_kdj_golden_cross = (prev_day_kdj[k_col] < prev_day_kdj[d_col]) and \
                                           (last_day_kdj[k_col] > last_day_kdj[d_col])
-                    
+
                     # 2. 判断是否在超卖区 (K < 20 且 D < 20)
                     is_oversold_golden_cross = is_kdj_golden_cross and \
                                                (last_day_kdj[k_col] < 20) and \
                                                (last_day_kdj[d_col] < 20)
-                    
+
                     if is_oversold_golden_cross:
                         # J 值的计算公式 J = 3*K - 2*D
                         latest_j = 3 * last_day_kdj[k_col] - 2 * last_day_kdj[d_col]
@@ -722,7 +724,6 @@ class DataProcessor:
         else:
             cxfl_df_scored = pd.DataFrame()
 
-
         # 1. 将所有可得分的 DF 加入到待合并列表
         # MODIFIED: 重新将 ljqs_df_scored 加入到候选列表，使其成为筛选依据，并新增 kdj_df
         input_dfs_to_score = [macd_df, cci_df, xstp_df, rsi_df, boll_df, ljqs_df_scored, cxfl_df_scored, kdj_df]
@@ -736,7 +737,7 @@ class DataProcessor:
             print("[WARN] 未找到任何符合任一条件的股票。")
             # >> 更新返回列以添加 '最新价'
             return pd.DataFrame(columns=['股票代码', '股票简称', '最新价', 'MACD买卖信号',
-                                         'CCI买卖信号', 'RSI买卖信号', 'KDJ买卖信号', # NEW
+                                         'CCI买卖信号', 'RSI买卖信号', 'KDJ买卖信号',  # NEW
                                          '均线多头排列',
                                          'BOLL波动性信号', '量价齐升天数',
                                          '持续放量信号', '持续放量天数',
@@ -751,18 +752,19 @@ class DataProcessor:
         all_codes = all_codes[~all_codes['股票简称'].str.contains('ST|st|退市', case=False, na=False)].copy()
         final_df = all_codes.copy()
 
-        # 初始化评分列和信号列 
+        # 初始化评分列和信号列
         final_df['MACD买卖信号'] = '未满足'
         final_df['CCI买卖信号'] = '未满足'
         final_df['RSI买卖信号'] = '未满足'
         final_df['均线多头排列'] = '未满足'
         final_df['BOLL波动性信号'] = '未满足'
         final_df['持续放量信号'] = '未满足'
-        final_df['KDJ买卖信号'] = '未满足' # NEW
+        final_df['KDJ买卖信号'] = '未满足'  # NEW
 
         # 定义所有输出的信号列，用于后续的检查和筛选 (不包含 '量价齐升信号')
         # MODIFIED: Added KDJ
-        signal_cols_for_output = ['MACD买卖信号', 'CCI买卖信号', 'RSI买卖信号', '均线多头排列', 'BOLL波动性信号', '持续放量信号', 'KDJ买卖信号']
+        signal_cols_for_output = ['MACD买卖信号', 'CCI买卖信号', 'RSI买卖信号', '均线多头排列', 'BOLL波动性信号',
+                                  '持续放量信号', 'KDJ买卖信号']
 
         def update_df(source_df: pd.DataFrame, column_name: str, check_col: str = None):
             """更新输出的信号列，仅针对需要输出的列。"""
@@ -786,7 +788,7 @@ class DataProcessor:
         update_df(xstp_df, '均线多头排列')
         update_df(boll_df, 'BOLL波动性信号', 'BOLL买卖信号')
         update_df(cxfl_df_scored, '持续放量信号')
-        update_df(kdj_df, 'KDJ买卖信号', 'KDJ买卖信号') # NEW
+        update_df(kdj_df, 'KDJ买卖信号', 'KDJ买卖信号')  # NEW
 
         # 强势股池
         strong_stocks_codes = set(strong_stocks_df[
@@ -834,34 +836,34 @@ class DataProcessor:
                 final_df['持续放量天数'] = 0
         else:
             final_df['持续放量天数'] = 0
-        
+
         # --- MODIFIED: 重新添加合并最新价的逻辑，使用实时行情作为主要来源，市场资金流向作为备用 ---
-        
+
         # 1. Primary source: filtered_spot (A股实时行情), column is '当前价格'
         primary_price_df = pd.DataFrame()
         if '当前价格' in filtered_spot.columns:
             primary_price_df = filtered_spot[['股票代码', '当前价格']].copy()
             primary_price_df.rename(columns={'当前价格': '最新价'}, inplace=True)
-        
+
         # 2. Secondary source: market_fund_flow_df (市场资金流向), column is '最新价'
         secondary_price_df = pd.DataFrame()
         if '最新价' in market_fund_flow_df.columns:
             secondary_price_df = market_fund_flow_df[['股票代码', '最新价']].copy()
-        
+
         # 3. Merge primary price
         final_df = pd.merge(final_df, primary_price_df, on='股票代码', how='left')
-        
+
         # 4. Fill missing values with secondary price
         if not secondary_price_df.empty:
             # Merge secondary price as a temporary column
             final_df = pd.merge(final_df, secondary_price_df, on='股票代码', how='left', suffixes=('', '_secondary'))
-            
+
             # Fill NaNs in the primary '最新价' column using the secondary column
             final_df['最新价'] = final_df['最新价'].fillna(final_df['最新价_secondary'])
-            
+
             # Drop the temporary column
             final_df.drop(columns=[c for c in ['最新价_secondary'] if c in final_df.columns], inplace=True)
-            
+
         final_df['最新价'] = final_df['最新价'].fillna('N/A')
         # ------------------------------------
 
@@ -874,10 +876,10 @@ class DataProcessor:
         final_df.drop(columns=['完整股票编码'], inplace=True)
 
         # >>> 筛选逻辑 (保持不变，确保量价齐升作为隐藏条件)
-        
+
         # 1. 明确获取 量价齐升 (天数 > 1) 的股票代码集合
         ljqs_codes = set(ljqs_df_scored['股票代码']) if not ljqs_df_scored.empty else set()
-        
+
         # 2. 检查输出的信号列中是否有任何一个满足条件 (即不为 '未满足')
         current_signal_cols = [col for col in signal_cols_for_output if col in final_df.columns]
 
@@ -886,13 +888,13 @@ class DataProcessor:
             is_explicitly_satisfied = final_df[current_signal_cols].apply(lambda row: (row != '未满足').any(), axis=1)
         else:
             is_explicitly_satisfied = pd.Series([False] * len(final_df), index=final_df.index)
-            
+
         # 3. 检查是否满足 量价齐升 (天数 > 1) 信号
         is_ljqs_satisfied = final_df['股票代码'].isin(ljqs_codes)
 
         # 4. 最终筛选: 满足 **任何一个** 条件即可 (包括隐藏的量价齐升)
         is_recommended = is_explicitly_satisfied | is_ljqs_satisfied
-        
+
         recommended_df = final_df[is_recommended].reset_index(drop=True)
         # <<< 筛选逻辑
 
@@ -900,13 +902,13 @@ class DataProcessor:
 
         # 确保列顺序 (添加 '最新价')
         final_cols_order = ['股票代码', '股票简称', '最新价', 'MACD买卖信号',  # <-- ADDED '最新价'
-                            'CCI买卖信号', 'RSI买卖信号', 'KDJ买卖信号', # NEW
+                            'CCI买卖信号', 'RSI买卖信号', 'KDJ买卖信号',  # NEW
                             '均线多头排列',
                             'BOLL波动性信号',
                             '量价齐升天数',
                             '持续放量信号',
                             '持续放量天数',
-                            '强势股池', '连涨天数', '股票链接'] 
+                            '强势股池', '连涨天数', '股票链接']
 
         # 仅保留在 DataFrame 中存在的列
         final_cols_order = [col for col in final_cols_order if col in recommended_df.columns]
@@ -1062,6 +1064,7 @@ class ExcelReporter:
             raise
         finally:
             self.cleanup()
+
     # << 修改 generate_report 方法
 
     def cleanup(self):
@@ -1107,13 +1110,15 @@ class StockDataPipeline:
                                                                  symbol="5日排行")
             industry_board_df = self.fetcher.fetch_with_cache(ak.stock_board_industry_name_em, '行业板块名称')
             financial_abstract_df = self.fetcher.fetch_with_cache(ak.stock_financial_abstract, '财务摘要数据')
-            strong_stocks_df_raw = self.fetcher.fetch_with_cache(ak.stock_rank_ljqd_ths, '强势股池')
+            strong_stocks_df_raw = self.fetcher.fetch_with_cache(ak.stock_zt_pool_strong_em, '强势股池',
+                                                                 date=self.fetcher.today_str)
+
             consecutive_rise_df_raw = self.fetcher.fetch_with_cache(ak.stock_rank_lxsz_ths, '连续上涨')
             df_ma20 = self.fetcher.fetch_with_cache(ak.stock_rank_xstp_ths, '向上突破20日均线', symbol="20日均线")
             df_ma60 = self.fetcher.fetch_with_cache(ak.stock_rank_xstp_ths, '向上突破60日均线', symbol="60日均线")
             df_ma90 = self.fetcher.fetch_with_cache(ak.stock_rank_xstp_ths, '向上突破90日均线', symbol="90日均线")
             ljqs_df_raw = self.fetcher.fetch_with_cache(ak.stock_rank_ljqs_ths, '量价齐升')
-            # >> 新增持续放量数据的获取 
+            # >> 新增持续放量数据的获取
             cxfl_df_raw = self.fetcher.fetch_continuous_volume_increase()
 
             print("\n>>> 正在进行数据处理和筛选...")
@@ -1126,7 +1131,7 @@ class StockDataPipeline:
             # 调用修改后的 process_main_report_sheet
             main_report_sheet = self.processor.process_main_report_sheet(processed_profit_data,
                                                                          filtered_spot)
-            
+
             # process_market_fund_flow 会将价格列标准化为 '最新价'
             processed_market_fund_flow = self.processor.process_market_fund_flow(market_fund_flow_raw)
             processed_financial_abstract = self.processor.process_financial_abstract(financial_abstract_df)
@@ -1135,9 +1140,8 @@ class StockDataPipeline:
 
             # >> 新增：处理量价齐升数据
             processed_ljqs = self.processor.process_general_rank(ljqs_df_raw, '量价齐升')
-            # >> 新增：处理持续放量数据 
+            # >> 新增：处理持续放量数据
             processed_cxfl = self.processor.process_continuous_volume_increase(cxfl_df_raw)
-
 
             # 使用新的获取方法
             top_industry_cons_df = self.fetcher.get_top_industry_stocks()
@@ -1168,7 +1172,7 @@ class StockDataPipeline:
             cci_df = technical_results['cci_df']
             rsi_df = technical_results['rsi_df']
             boll_df = technical_results['boll_df']
-            kdj_df = technical_results['kdj_df'] # NEW: KDJ DF
+            kdj_df = technical_results['kdj_df']  # NEW: KDJ DF
 
             recommended_stocks = self.processor.find_recommended_stocks_with_score(
                 macd_df, cci_df, processed_xstp_df, rsi_df, processed_strong_stocks,
@@ -1176,13 +1180,12 @@ class StockDataPipeline:
                 boll_df,
                 # >> 传入量价齐升数据
                 processed_ljqs,
-                # >> 传入持续放量数据 
+                # >> 传入持续放量数据
                 processed_cxfl,
                 # >> ADDED: 传入市场资金流向数据作为备用价格源
                 processed_market_fund_flow,
-                kdj_df # NEW: Pass KDJ DF
+                kdj_df  # NEW: Pass KDJ DF
             )
-
 
             sheets_data = {
                 '主力研报筛选': main_report_sheet,
@@ -1197,13 +1200,13 @@ class StockDataPipeline:
                 '连续上涨': processed_consecutive_rise,
 
                 '量价齐升': processed_ljqs,
-                # >> 新增持续放量工作表数据 
+                # >> 新增持续放量工作表数据
                 '持续放量': processed_cxfl,
                 'MACD金叉': macd_df,
                 'CCI超卖': cci_df,
                 'RSI金叉': rsi_df,
                 'BOLL低波': boll_df,
-                'KDJ超卖金叉': kdj_df, # NEW: KDJ SHEETS
+                'KDJ超卖金叉': kdj_df,  # NEW: KDJ SHEETS
                 '指标汇总': recommended_stocks,
             }
             self.reporter.generate_report(sheets_data)
