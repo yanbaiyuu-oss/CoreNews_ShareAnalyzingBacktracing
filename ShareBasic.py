@@ -193,7 +193,7 @@ class DataFetcher:
         end_date = datetime.now()
         start_date = end_date - timedelta(days=days)
         start_date_str = start_date.strftime("%Y%m%d")
-        end_date_str = end_date.strftime("%Y%m%d")
+        end_date_str = end_date.strftime("%Ym%d")
         if os.path.exists(self.macd_cache_file):
             # 检查缓存是否过期（例如，如果缓存不是今天创建的，则重新下载）
             cache_date = datetime.fromtimestamp(os.path.getmtime(self.macd_cache_file)).strftime("%Y%m%d")
@@ -531,8 +531,8 @@ class DataProcessor:
                                          source_df: pd.DataFrame) -> Dict[str, pd.DataFrame]:
         """集中处理所有技术指标，避免重复计算。"""
         print(f"\n正在对 {len(all_ta_codes)} 只股票进行批量技术分析...")
-        # 移除 'adx'
-        results = {'macd': [], 'cci': [], 'rsi': [], 'boll': []}
+        # 新增 'kdj' 结果列表
+        results = {'macd': [], 'cci': [], 'rsi': [], 'boll': [], 'kdj': []}
         grouped = hist_df_all.groupby('股票代码')
 
         # 预先清理股票信息，用于查找简称
@@ -540,7 +540,7 @@ class DataProcessor:
 
         for code, group_df in grouped:
             try:
-                # 至少需要30条数据才能计算MACD/RSI/CCI
+                # 至少需要30条数据才能计算MACD/RSI/CCI/KDJ
                 if len(group_df) < 30:
                     continue
 
@@ -556,8 +556,11 @@ class DataProcessor:
                 # --- 新增 BOLL 计算 (默认长度20, 标准差2) ---
                 boll_cols = ta.bbands(group_df['close'], append=False)
 
+                # --- 新增 KDJ 计算 (默认周期 14, 3, 3) ---
+                kdj_cols = ta.stoch(group_df['high'], group_df['low'], group_df['close'], append=False)
+
                 # 安全地连接所有指标结果
-                group_df = pd.concat([group_df, macd_cols, cci_cols, rsi6_cols, rsi14_cols, boll_cols],
+                group_df = pd.concat([group_df, macd_cols, cci_cols, rsi6_cols, rsi14_cols, boll_cols, kdj_cols],
                                      axis=1)
 
                 # --- MACD 信号检查 ---
@@ -639,6 +642,37 @@ class DataProcessor:
                             'BOLL买卖信号': '下轨附近低波动买入',
                         })
 
+                # --- KDJ 信号检查 (新增) ---
+                if len(group_df) >= 2 and 'STOCHk_14_3_3' in group_df.columns and 'STOCHd_14_3_3' in group_df.columns:
+                    last_day_kdj = group_df.iloc[-1]
+                    prev_day_kdj = group_df.iloc[-2]
+                    
+                    k_col = 'STOCHk_14_3_3'
+                    d_col = 'STOCHd_14_3_3'
+                    
+                    # 1. 判断是否为金叉
+                    is_kdj_golden_cross = (prev_day_kdj[k_col] < prev_day_kdj[d_col]) and \
+                                          (last_day_kdj[k_col] > last_day_kdj[d_col])
+                    
+                    # 2. 判断是否在超卖区 (K < 20 且 D < 20)
+                    is_oversold_golden_cross = is_kdj_golden_cross and \
+                                               (last_day_kdj[k_col] < 20) and \
+                                               (last_day_kdj[d_col] < 20)
+                    
+                    if is_oversold_golden_cross:
+                        # J 值的计算公式 J = 3*K - 2*D
+                        latest_j = 3 * last_day_kdj[k_col] - 2 * last_day_kdj[d_col]
+
+                        stock_info = source_df_clean[source_df_clean['股票代码'] == code].iloc[0]
+                        results['kdj'].append({
+                            '股票代码': code,
+                            '股票简称': stock_info.get('股票简称', 'N/A'),
+                            '最新K值': f"{last_day_kdj[k_col]:.2f}",
+                            '最新D值': f"{last_day_kdj[d_col]:.2f}",
+                            '最新J值': f"{latest_j:.2f}",
+                            'KDJ买卖信号': '超卖区金叉 (买入信号)',
+                        })
+
             except Exception as e:
                 print(f"[ERROR] 错误：计算 {code} 的技术指标时出错: {e}，已跳过。")
 
@@ -647,11 +681,13 @@ class DataProcessor:
         cci_df = pd.DataFrame(results['cci']) if results['cci'] else pd.DataFrame()
         rsi_df = pd.DataFrame(results['rsi']) if results['rsi'] else pd.DataFrame()
         boll_df = pd.DataFrame(results['boll']) if results['boll'] else pd.DataFrame()
+        kdj_df = pd.DataFrame(results['kdj']) if results['kdj'] else pd.DataFrame()
 
         print(
-            f"MACD金叉: {len(macd_df)} 只，CCI超卖: {len(cci_df)} 只，RSI金叉: {len(rsi_df)} 只，BOLL低波: {len(boll_df)} 只。")
-        # 移除 'adx_df'
-        return {'macd_df': macd_df, 'cci_df': cci_df, 'rsi_df': rsi_df, 'boll_df': boll_df}
+            f"MACD金叉: {len(macd_df)} 只，CCI超卖: {len(cci_df)} 只，RSI金叉: {len(rsi_df)} 只，BOLL低波: {len(boll_df)} 只，KDJ超卖金叉: {len(kdj_df)} 只。"
+        )
+        # 返回新增的 kdj_df
+        return {'macd_df': macd_df, 'cci_df': cci_df, 'rsi_df': rsi_df, 'boll_df': boll_df, 'kdj_df': kdj_df}
 
     # >> 修改 find_recommended_stocks_with_score 方法签名和逻辑
     def find_recommended_stocks_with_score(self, macd_df: pd.DataFrame, cci_df: pd.DataFrame, xstp_df: pd.DataFrame,
@@ -659,12 +695,11 @@ class DataProcessor:
                                            filtered_spot: pd.DataFrame,
                                            consecutive_rise_df: pd.DataFrame,
                                            boll_df: pd.DataFrame,
-                                           # >> 原有量价齐升参数
                                            ljqs_df: pd.DataFrame,
-                                           # >> 新增持续放量参数
                                            cxfl_df: pd.DataFrame,
-                                           # >> ADDED: 新增市场资金流向参数
-                                           market_fund_flow_df: pd.DataFrame
+                                           market_fund_flow_df: pd.DataFrame,
+                                           # >> ADDED: KDJ DF
+                                           kdj_df: pd.DataFrame
                                            ) -> pd.DataFrame:
         """基于多因子评分筛选推荐股票。"""
         print("\n正在基于多因子评分筛选推荐股票...")
@@ -689,8 +724,8 @@ class DataProcessor:
 
 
         # 1. 将所有可得分的 DF 加入到待合并列表
-        # MODIFIED: 重新将 ljqs_df_scored 加入到候选列表，使其成为筛选依据
-        input_dfs_to_score = [macd_df, cci_df, xstp_df, rsi_df, boll_df, ljqs_df_scored, cxfl_df_scored]
+        # MODIFIED: 重新将 ljqs_df_scored 加入到候选列表，使其成为筛选依据，并新增 kdj_df
+        input_dfs_to_score = [macd_df, cci_df, xstp_df, rsi_df, boll_df, ljqs_df_scored, cxfl_df_scored, kdj_df]
 
         df_to_concat = []
         for df in input_dfs_to_score:
@@ -701,7 +736,8 @@ class DataProcessor:
             print("[WARN] 未找到任何符合任一条件的股票。")
             # >> 更新返回列以添加 '最新价'
             return pd.DataFrame(columns=['股票代码', '股票简称', '最新价', 'MACD买卖信号',
-                                         'CCI买卖信号', 'RSI买卖信号', '均线多头排列',
+                                         'CCI买卖信号', 'RSI买卖信号', 'KDJ买卖信号', # NEW
+                                         '均线多头排列',
                                          'BOLL波动性信号', '量价齐升天数',
                                          '持续放量信号', '持续放量天数',
                                          '强势股池', '连涨天数', '股票链接'])
@@ -715,16 +751,18 @@ class DataProcessor:
         all_codes = all_codes[~all_codes['股票简称'].str.contains('ST|st|退市', case=False, na=False)].copy()
         final_df = all_codes.copy()
 
-        # 初始化评分列和信号列 (保持不初始化 '量价齐升信号' 列)
+        # 初始化评分列和信号列 
         final_df['MACD买卖信号'] = '未满足'
         final_df['CCI买卖信号'] = '未满足'
         final_df['RSI买卖信号'] = '未满足'
         final_df['均线多头排列'] = '未满足'
         final_df['BOLL波动性信号'] = '未满足'
         final_df['持续放量信号'] = '未满足'
+        final_df['KDJ买卖信号'] = '未满足' # NEW
 
         # 定义所有输出的信号列，用于后续的检查和筛选 (不包含 '量价齐升信号')
-        signal_cols_for_output = ['MACD买卖信号', 'CCI买卖信号', 'RSI买卖信号', '均线多头排列', 'BOLL波动性信号', '持续放量信号']
+        # MODIFIED: Added KDJ
+        signal_cols_for_output = ['MACD买卖信号', 'CCI买卖信号', 'RSI买卖信号', '均线多头排列', 'BOLL波动性信号', '持续放量信号', 'KDJ买卖信号']
 
         def update_df(source_df: pd.DataFrame, column_name: str, check_col: str = None):
             """更新输出的信号列，仅针对需要输出的列。"""
@@ -747,8 +785,8 @@ class DataProcessor:
         update_df(rsi_df, 'RSI买卖信号', 'RSI买卖信号')
         update_df(xstp_df, '均线多头排列')
         update_df(boll_df, 'BOLL波动性信号', 'BOLL买卖信号')
-        # 保持不调用 update_df(ljqs_df_scored, '量价齐升信号')
         update_df(cxfl_df_scored, '持续放量信号')
+        update_df(kdj_df, 'KDJ买卖信号', 'KDJ买卖信号') # NEW
 
         # 强势股池
         strong_stocks_codes = set(strong_stocks_df[
@@ -862,7 +900,8 @@ class DataProcessor:
 
         # 确保列顺序 (添加 '最新价')
         final_cols_order = ['股票代码', '股票简称', '最新价', 'MACD买卖信号',  # <-- ADDED '最新价'
-                            'CCI买卖信号', 'RSI买卖信号', '均线多头排列',
+                            'CCI买卖信号', 'RSI买卖信号', 'KDJ买卖信号', # NEW
+                            '均线多头排列',
                             'BOLL波动性信号',
                             '量价齐升天数',
                             '持续放量信号',
@@ -982,8 +1021,9 @@ class ExcelReporter:
                 {'column': 'CCI买卖信号', 'check': lambda x: '超卖' in str(x), 'format': self.green_format},
                 {'column': 'RSI买卖信号', 'check': lambda x: '金叉' in str(x), 'format': self.red_format},
                 {'column': 'BOLL波动性信号', 'check': lambda x: '低波动买入' in str(x), 'format': self.yellow_format},
-                # 保持移除量价齐升信号的条件格式
-                {'column': '持续放量信号', 'check': lambda x: '已满足' in str(x), 'format': self.yellow_format}
+                {'column': '持续放量信号', 'check': lambda x: '已满足' in str(x), 'format': self.yellow_format},
+                # NEW: KDJ 超卖金叉信号使用绿色
+                {'column': 'KDJ买卖信号', 'check': lambda x: '超卖区金叉' in str(x), 'format': self.green_format},
             ]},
             # '主力研报筛选' 不再包含链接和价格
             '主力研报筛选': {'df': sheets_data.get('主力研报筛选'), 'link_col': None, 'conditional_format': None},
@@ -996,7 +1036,7 @@ class ExcelReporter:
             '向上突破': {'df': sheets_data.get('向上突破'), 'link_col': None, 'conditional_format': None},
             '强势股池': {'df': sheets_data.get('强势股池'), 'link_col': None, 'conditional_format': None},
             '连续上涨': {'df': sheets_data.get('连续上涨'), 'link_col': None, 'conditional_format': None},
-            # >> 保持量价齐升工作表
+
             '量价齐升': {'df': sheets_data.get('量价齐升'), 'link_col': None, 'conditional_format': None},
             # >> 保持持续放量工作表
             '持续放量': {'df': sheets_data.get('持续放量'), 'link_col': None, 'conditional_format': None},
@@ -1008,6 +1048,9 @@ class ExcelReporter:
                 {'column': 'RSI买卖信号', 'check': lambda x: '金叉' in str(x), 'format': self.red_format}]},
             'BOLL低波': {'df': sheets_data.get('BOLL低波'), 'link_col': None, 'conditional_format': [
                 {'column': 'BOLL买卖信号', 'check': lambda x: '买入' in str(x), 'format': self.yellow_format}]},
+            # NEW SHEET: KDJ 超卖金叉
+            'KDJ超卖金叉': {'df': sheets_data.get('KDJ超卖金叉'), 'link_col': None, 'conditional_format': [
+                {'column': 'KDJ买卖信号', 'check': lambda x: '超卖区金叉' in str(x), 'format': self.green_format}]},
         }
         try:
             for sheet_name, spec in sheet_specs.items():
@@ -1125,7 +1168,7 @@ class StockDataPipeline:
             cci_df = technical_results['cci_df']
             rsi_df = technical_results['rsi_df']
             boll_df = technical_results['boll_df']
-
+            kdj_df = technical_results['kdj_df'] # NEW: KDJ DF
 
             recommended_stocks = self.processor.find_recommended_stocks_with_score(
                 macd_df, cci_df, processed_xstp_df, rsi_df, processed_strong_stocks,
@@ -1136,7 +1179,8 @@ class StockDataPipeline:
                 # >> 传入持续放量数据 
                 processed_cxfl,
                 # >> ADDED: 传入市场资金流向数据作为备用价格源
-                processed_market_fund_flow
+                processed_market_fund_flow,
+                kdj_df # NEW: Pass KDJ DF
             )
 
 
@@ -1159,6 +1203,7 @@ class StockDataPipeline:
                 'CCI超卖': cci_df,
                 'RSI金叉': rsi_df,
                 'BOLL低波': boll_df,
+                'KDJ超卖金叉': kdj_df, # NEW: KDJ SHEETS
                 '指标汇总': recommended_stocks,
             }
             self.reporter.generate_report(sheets_data)
