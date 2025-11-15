@@ -922,7 +922,7 @@ class NewsFetcher:
             print("[WARN] 推荐股票列表为空，跳过新闻获取。")
             return pd.DataFrame()
 
-        print(f"\n>>> 正在为 {len(recommended_stocks_df)} 只推荐股票并行获取个股新闻...")
+        print(f"\n>>> 正在为 {len(recommended_stocks_df)} 只目标股票并行获取个股新闻...")
         
         all_news = []
         future_to_code = {}
@@ -1132,7 +1132,7 @@ class StockDataPipeline:
         self.news_fetcher = NewsFetcher(self.config) 
         self.reporter = ExcelReporter(self.config)
 
-    # >> 修改 run 方法
+    # >> 修改 run 方法以实现新闻筛选逻辑
     def run(self):
 
         start_time = time.time()
@@ -1212,24 +1212,40 @@ class StockDataPipeline:
             macd_df = technical_results['macd_df']
             cci_df = technical_results['cci_df']
             rsi_df = technical_results['rsi_df']
-
             boll_df = technical_results['boll_df']
 
 
+            # --- 1. 生成最终的 '指标汇总' (Recommended Stocks) ---
             recommended_stocks = self.processor.find_recommended_stocks_with_score(
                 macd_df, cci_df, processed_xstp_df, rsi_df, processed_strong_stocks,
                 filtered_spot, processed_consecutive_rise,
                 boll_df,
-                # >> 传入量价齐升数据
                 processed_ljqs,
-                # >> 传入持续放量数据 # << ADDED
                 processed_cxfl
             )
             
-            # === ADDITION: 获取和处理个股新闻 ===
-            raw_stock_news = self.news_fetcher.fetch_all_recommended_stocks_news(recommended_stocks)
+            # === 2. MODIFICATION: 筛选新闻的目标股票 (MACD金叉 或 RSI金叉) ===
+            news_target_stocks = pd.DataFrame()
+            
+            # MACD金叉
+            if not macd_df.empty:
+                # 仅选择代码和简称，因为 macd_df 已经是金叉筛选后的结果
+                news_target_stocks = pd.concat([news_target_stocks, macd_df[['股票代码', '股票简称']]], ignore_index=True)
+            
+            # RSI金叉
+            if not rsi_df.empty:
+                # 仅选择代码和简称
+                news_target_stocks = pd.concat([news_target_stocks, rsi_df[['股票代码', '股票简称']]], ignore_index=True)
+
+            # 去重以获取唯一的股票列表
+            news_target_stocks = news_target_stocks.drop_duplicates(subset=['股票代码']).copy()
+            
+            print(f"\n>>> 找到 {len(news_target_stocks)} 只 '金叉(买入信号)' 股票作为新闻收集目标。")
+            
+            # === 3. 获取和处理个股新闻 (使用筛选后的目标列表) ===
+            raw_stock_news = self.news_fetcher.fetch_all_recommended_stocks_news(news_target_stocks)
             processed_stock_news = self.processor.process_stock_news(raw_stock_news)
-            # =================================
+            # =======================================================
 
             sheets_data = {
                 '主力研报筛选': main_report_sheet,
@@ -1242,18 +1258,16 @@ class StockDataPipeline:
                 '向上突破': processed_xstp_df,
                 '强势股池': processed_strong_stocks,
                 '连续上涨': processed_consecutive_rise,
-
                 '量价齐升': processed_ljqs,
-                # >> 新增持续放量工作表数据 # << ADDED
                 '持续放量': processed_cxfl,
                 'MACD金叉': macd_df,
                 'CCI超卖': cci_df,
                 'RSI金叉': rsi_df,
                 'BOLL低波': boll_df,
                 '指标汇总': recommended_stocks,
-                # === ADDITION: 新闻工作表数据 ===
+                # === 新闻工作表数据 ===
                 '指标个股新闻': processed_stock_news, 
-                # ==============================
+                # ======================
             }
             self.reporter.generate_report(sheets_data)
         except Exception as e:
