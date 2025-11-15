@@ -1229,7 +1229,7 @@ class StockDataPipeline:
             kdj_df = technical_results['kdj_df']  # NEW: KDJ DF
 
             # --- 筛选最终推荐股票之前，获取所有候选股票的行业信息 ---
- 
+
             # 调用修改后的 find_recommended_stocks_with_score
             recommended_stocks = self.processor.find_recommended_stocks_with_score(
                 macd_df, cci_df, processed_xstp_df, rsi_df, processed_strong_stocks,
@@ -1239,7 +1239,7 @@ class StockDataPipeline:
                 processed_cxfl,
                 processed_market_fund_flow,
                 kdj_df,
-             )
+            )
 
             sheets_data = {
                 '主力研报筛选': main_report_sheet,
