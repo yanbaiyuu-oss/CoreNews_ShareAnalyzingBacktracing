@@ -5,7 +5,7 @@ import time
 import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import warnings
-from typing import Callable, Dict, Any
+from typing import Callable, Dict, Any, List
 import pandas_ta as ta
 import numpy as np
 import xlsxwriter
@@ -238,7 +238,49 @@ class DataFetcher:
         print("[WARN] 未能成功下载任何股票的历史数据。")
         return pd.DataFrame()
 
-# REMOVED: DataFetcher.fetch_industry_info method
+    # >> NEW: 添加获取单个股票所属行业信息的方法
+    def fetch_industry_info(self, code: str) -> Dict[str, str]:
+        """为单个股票代码获取所属行业信息 (ak.stock_individual_info_em)。"""
+        try:
+            # 使用 ak.stock_individual_info_em 获取股票信息
+            info_df = ak.stock_individual_info_em(symbol=code)
+
+            # 查找 '行业' 字段的值
+            industry = info_df[info_df['项目'] == '所属行业']['值'].iloc[0]
+            return {code: industry}
+        except Exception:
+            # print(f"[WARN] 获取 {code} 行业信息失败: {e}")
+            return {code: 'N/A'}
+
+    def get_industry_map_parallel(self, codes: List[str]) -> Dict[str, str]:
+        """并行获取多个股票代码的所属行业信息。"""
+        print(f"\n正在并行获取 {len(codes)} 只股票的所属行业信息...")
+        industry_map = {}
+        future_to_code = {}
+        
+        # 重新创建 executor 以确保线程池独立且有足够的 workers
+        with ThreadPoolExecutor(max_workers=self.config.MAX_WORKERS) as executor:
+            for code in codes:
+                future = executor.submit(self.fetch_industry_info, code)
+                future_to_code[future] = code
+            
+            for i, future in enumerate(as_completed(future_to_code)):
+                code = future_to_code[future]
+                try:
+                    result = future.result()
+                    industry_map.update(result)
+                    
+                    if (i + 1) % 50 == 0 or (i + 1) == len(codes):
+                        print(f"  - 进度: 已处理 {i + 1}/{len(codes)} 只股票的行业信息。")
+                except Exception:
+                    # 失败时已在 fetch_industry_info 中处理，这里只记录
+                    industry_map[code] = 'N/A'
+        
+        print("所属行业信息获取完成。")
+        return industry_map
+    # << NEW: 添加获取单个股票所属行业信息的方法
+
+
 # ==============================================================================
 # 数据处理类
 # ==============================================================================
@@ -433,7 +475,7 @@ class DataProcessor:
             df['持续放量天数'] = pd.to_numeric(df['持续放量天数'], errors='coerce').fillna(0).astype(int)
         elif '放量天数' in df.columns:  # 兼容可能出现的字段名
             df.rename(columns={'放量天数': '持续放量天数'}, inplace=True)
-            df['持续放量天数'] = pd.to_numeric(df['持续放量天数'], errors='coerce').fillna(0).astype(int)
+            df['持续放量天数'] = pd.to_numeric(df['放量天数'], errors='coerce').fillna(0).astype(int)
         else:
             print("[WARN] '持续放量天数' 或 '放量天数' 列未找到，无法进行评分筛选。")
             df['持续放量天数'] = 0
@@ -689,7 +731,8 @@ class DataProcessor:
                                            rsi_df: pd.DataFrame, strong_stocks_df: pd.DataFrame,
                                            filtered_spot: pd.DataFrame, consecutive_rise_df: pd.DataFrame,
                                            boll_df: pd.DataFrame, ljqs_df: pd.DataFrame, cxfl_df: pd.DataFrame,
-                                           market_fund_flow_df: pd.DataFrame, kdj_df: pd.DataFrame
+                                           market_fund_flow_df: pd.DataFrame, kdj_df: pd.DataFrame,
+                                           industry_map: Dict[str, str]  # << 重新添加 industry_map 参数
                                            ) -> pd.DataFrame:
         """基于多因子评分筛选推荐股票。"""
         print("\n正在基于多因子评分筛选推荐股票...")
@@ -722,9 +765,9 @@ class DataProcessor:
 
         if not df_to_concat:
             print("[WARN] 未找到任何符合任一条件的股票。")
-            # >> 更新返回列以移除 '所属行业'
-            return pd.DataFrame(columns=['股票代码', '股票简称', '最新价', 'MACD买卖信号', 'CCI买卖信号',
-                                         'RSI买卖信号', 'KDJ买卖信号', '均线多头排列',
+            # 更新空 DataFrame 的列以包含 '所属行业'
+            return pd.DataFrame(columns=['股票代码', '股票简称', '最新价', '所属行业', 'MACD买卖信号',
+                                         'CCI买卖信号', 'RSI买卖信号', 'KDJ买卖信号', '均线多头排列',
                                          'BOLL波动性信号', '量价齐升天数', '持续放量信号',
                                          '持续放量天数', '强势股池', '连涨天数', '股票链接'])
 
@@ -835,7 +878,13 @@ class DataProcessor:
         final_df['最新价'] = pd.to_numeric(final_df['最新价'], errors='coerce').round(2)
         # ------------------------------------
 
-        # REMOVED: 合并所属行业信息逻辑
+        # >> NEW: 合并所属行业信息
+        print("正在合并所属行业信息...")
+        # 将行业字典转换为 DataFrame
+        industry_df = pd.DataFrame(industry_map.items(), columns=['股票代码', '所属行业'])
+        final_df = pd.merge(final_df, industry_df, on='股票代码', how='left')
+        final_df['所属行业'] = final_df['所属行业'].fillna('N/A')
+        # ------------------------------------
 
         # 5. 生成股票链接
         final_df['完整股票编码'] = final_df['股票代码'].apply(format_stock_code)
@@ -877,8 +926,8 @@ class DataProcessor:
         # <<< 筛选逻辑
         recommended_df.fillna('N/A', inplace=True)
 
-        # 确保列顺序 (移除 '所属行业')
-        final_cols_order = ['股票代码', '股票简称', '最新价', 'MACD买卖信号',
+        # 确保列顺序 (添加 '所属行业')
+        final_cols_order = ['股票代码', '股票简称', '最新价', '所属行业', 'MACD买卖信号',
                             'CCI买卖信号', 'RSI买卖信号', 'KDJ买卖信号',
                             '均线多头排列',
                             'BOLL波动性信号',
@@ -1166,9 +1215,17 @@ class StockDataPipeline:
             kdj_df = technical_results['kdj_df']  # NEW: KDJ DF
 
             # --- 筛选最终推荐股票之前，获取所有候选股票的行业信息 ---
-            # REMOVED: 行业信息并行获取逻辑和打印
+            # 1. 确定所有候选股票代码 (从所有技术指标和排行榜的结果中获取)
+            all_candidate_codes = set()
+            for df in [macd_df, cci_df, rsi_df, boll_df, kdj_df, processed_xstp_df, processed_strong_stocks,
+                       processed_consecutive_rise, processed_ljqs, processed_cxfl]:
+                if not df.empty and '股票代码' in df.columns:
+                    all_candidate_codes.update(df['股票代码'].tolist())
 
-            # 调用修改后的 find_recommended_stocks_with_score (已移除 industry_map 参数)
+            # 2. 获取行业信息
+            industry_map = self.fetcher.get_industry_map_parallel(list(all_candidate_codes))
+
+            # 调用修改后的 find_recommended_stocks_with_score
             recommended_stocks = self.processor.find_recommended_stocks_with_score(
                 macd_df, cci_df, processed_xstp_df, rsi_df, processed_strong_stocks,
                 filtered_spot, processed_consecutive_rise,
@@ -1177,6 +1234,7 @@ class StockDataPipeline:
                 processed_cxfl,
                 processed_market_fund_flow,
                 kdj_df,
+                industry_map,  # 传入行业信息字典
             )
 
             sheets_data = {
